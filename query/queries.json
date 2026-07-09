@@ -1,0 +1,6 @@
+{
+  "queries": {
+    "taxonomy_evaluation": "taxonomy_evaluation.txt",
+    "taxonomy_justified_evaluation": "taxonomy_justified_evaluation.txt"
+  }
+}

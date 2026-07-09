@@ -1,0 +1,18 @@
+log: info
+flask:
+  host: 127.0.0.1
+  port: 5151
+  max_body_bytes: 2097152
+taxonomy:
+  url: https://raw.githubusercontent.com/MISP/misp-taxonomies/main/content-classification/machinetag.json
+  cache_path: .cache/content-classification.json
+  cache_ttl_days: 30
+  timeout: 30
+ollama:
+  host: localhost
+  port: 11434
+  engine: gemma4:31b
+  allowlist:
+    - gemma4:31b
+  timeout: 300
+  temperature: 0.1
