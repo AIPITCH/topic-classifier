@@ -272,7 +272,7 @@ Server behavior:
 - corrects a UUID internally only when exactly one character is wrong and only one taxonomy UUID matches
 - maps UUIDs back to public taxonomy labels
 - when `justify=true`, makes a second Ollama call and keeps only labels justified by that second call
-- when `summary=true`, makes one additional Ollama call and adds `resum` to the final JSON; the summary continues from the justification context when `justify=true`, otherwise from the taxonomy tagging context
+- when `summary=true`, makes one additional Ollama call and adds `summary` to the final JSON; the summary continues from the justification context when `justify=true`, otherwise from the taxonomy tagging context
 
 Accepted body formats:
 
@@ -363,8 +363,7 @@ Response:
     }
   ],
   "justify": true,
-  "summary": true,
-  "resum": "The channel dump advertises leaked databases and credential dumps.",
+  "summary": "The channel dump advertises leaked databases and credential dumps.",
   "processing_time_seconds": 12.345,
   "truncated": false,
   "input_tokens": 42,

@@ -242,8 +242,7 @@ Response shape:
     }
   ],
   "justify": true,
-  "summary": true,
-  "resum": "The channel dump advertises leaked databases and credential dumps.",
+  "summary": "The channel dump advertises leaked databases and credential dumps.",
   "processing_time_seconds": 12.345,
   "truncated": false,
   "input_tokens": 42,
@@ -257,7 +256,7 @@ Response shape:
 1. evaluate Markdown into taxonomy UIDs
 2. challenge selected UIDs and keep only justified labels
 
-`summary=true` adds one Ollama call and includes `resum` in the final JSON. When `justify=true`, the summary call continues from the justification context. Otherwise, it continues from the taxonomy tagging context.
+`summary=true` adds one Ollama call and includes `summary` in the final JSON. When `justify=true`, the summary call continues from the justification context. Otherwise, it continues from the taxonomy tagging context.
 
 Taxonomy cache:
 

@@ -1270,7 +1270,6 @@ def evaluate_markdown(
     result = {
         "labels": labels,
         "justify": justify,
-        "summary": summary,
         "processing_time_seconds": round(processing_time_seconds, 3),
         "truncated": input_truncated,
         "input_tokens": input_tokens,
@@ -1279,7 +1278,7 @@ def evaluate_markdown(
         "raw_output": raw_outputs,
     }
     if summary:
-        result["resum"] = summary_text or ""
+        result["summary"] = summary_text or ""
     return result
 
 
