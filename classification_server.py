@@ -56,6 +56,8 @@ def print_meta() -> None:
     Print lightweight startup metadata.
     """
     logger.info("Channel Classifier API")
+    state = "activated" if auth_enabled(CONFIG) else "deactivated"
+    logger.info("Authentication %s", state)
 
 
 logger = logging.getLogger("Channel_Classifier")
