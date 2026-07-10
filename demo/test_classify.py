@@ -76,7 +76,7 @@ def parse_args() -> argparse.Namespace:
         help="Ask /evaluate for justified taxonomy matches.",
     )
     parser.add_argument(
-        "--resume",
+        "--summary",
         action="store_true",
         help="Ask /evaluate to include a summary in the result.",
     )
@@ -137,7 +137,7 @@ def main() -> int:
             model=model,
             timeout=args.timeout,
             justify=args.justify,
-            resume=args.resume,
+            summary=args.summary,
         )
     except ClassificationError as error:
         print(f"API error: {error}", file=sys.stderr)

@@ -143,7 +143,7 @@ class ClassificationClient:
         timeout: int | None = None,
         include_raw: bool = False,
         justify: bool = False,
-        resume: bool = False,
+        summary: bool = False,
     ) -> dict[str, Any]:
         """
         Evaluate Markdown with content-classification taxonomy.
@@ -154,7 +154,7 @@ class ClassificationClient:
             "timeout": effective_timeout,
             "include_raw": include_raw,
             "justify": justify,
-            "resume": resume,
+            "summary": summary,
         }
         if model:
             payload["model"] = model

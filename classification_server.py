@@ -822,7 +822,7 @@ def enqueue_evaluation_job(
     model: str | None,
     timeout_override: int | None,
     justify: bool,
-    resume: bool,
+    summary: bool,
 ) -> dict[str, Any]:
     """
     Create async evaluation job and queue work.
@@ -839,7 +839,7 @@ def enqueue_evaluation_job(
             "model": model,
             "timeout": timeout_override,
             "justify": justify,
-            "resume": resume,
+            "summary": summary,
         },
     }
     write_job(job)
@@ -873,7 +873,7 @@ def process_evaluation_job(job_id: str) -> None:
             request_data.get("model"),
             request_data.get("timeout"),
             parse_bool(request_data.get("justify")),
-            parse_bool(request_data.get("resume")),
+            parse_bool(request_data.get("summary")),
         )
         job["status"] = "done"
         job["result"] = result
@@ -1146,7 +1146,7 @@ def evaluate_markdown(
     model: str | None = None,
     timeout_override: int | None = None,
     justify: bool = False,
-    resume: bool = False,
+    summary: bool = False,
 ) -> dict[str, Any]:
     """
     Evaluate Markdown against content-classification taxonomy and return JSON data.
@@ -1245,8 +1245,8 @@ def evaluate_markdown(
     else:
         labels = [public_taxonomy_label(by_uid[uid]) for uid in resolved_uids]
 
-    summary = None
-    if resume:
+    summary_text = None
+    if summary:
         summary_prompt = f"{SUMMARY_QUERY}\n\n# Input\n{user_markdown}"
         logger.info("Summarizing Markdown with model: %s", model_name)
         summary_response = client.generate(
@@ -1257,20 +1257,20 @@ def evaluate_markdown(
             validate_model=False,
             context=summary_context,
         )
-        summary = str(summary_response.get("response", "")).strip()
+        summary_text = str(summary_response.get("response", "")).strip()
         if isinstance(raw_outputs, dict):
-            raw_outputs["summary"] = summary
+            raw_outputs["summary"] = summary_text
         else:
             raw_outputs = {
                 "evaluation": raw_output,
-                "summary": summary,
+                "summary": summary_text,
             }
 
     processing_time_seconds = time.perf_counter() - start_time
     result = {
         "labels": labels,
         "justify": justify,
-        "resume": resume,
+        "summary": summary,
         "processing_time_seconds": round(processing_time_seconds, 3),
         "truncated": input_truncated,
         "input_tokens": input_tokens,
@@ -1278,8 +1278,8 @@ def evaluate_markdown(
         "input_token_limit": USER_MARKDOWN_TOKEN_LIMIT,
         "raw_output": raw_outputs,
     }
-    if resume:
-        result["resum"] = summary or ""
+    if summary:
+        result["resum"] = summary_text or ""
     return result
 
 
@@ -1378,10 +1378,10 @@ def create_app() -> Flask:
                 if "justify" in payload
                 else request.args.get("justify")
             )
-            resume = (
-                payload["resume"]
-                if "resume" in payload
-                else request.args.get("resume")
+            summary_requested = (
+                payload["summary"]
+                if "summary" in payload
+                else request.args.get("summary")
             )
             async_requested = (
                 payload["async"] if "async" in payload else request.args.get("async")
@@ -1396,24 +1396,24 @@ def create_app() -> Flask:
             model = request.args.get("model")
             include_raw = request.args.get("include_raw")
             justify = request.args.get("justify")
-            resume = request.args.get("resume")
+            summary_requested = request.args.get("summary")
             async_requested = request.args.get("async")
             timeout_value = request.args.get("timeout")
 
         include_raw = parse_bool(include_raw)
         justify = parse_bool(justify)
-        resume = parse_bool(resume)
+        summary_requested = parse_bool(summary_requested)
         async_requested = parse_bool(async_requested)
         if not isinstance(markdown, str) or not markdown.strip():
             return jsonify({"error": "data must be non-empty markdown text"}), 400
         if model is not None and not isinstance(model, str):
             return jsonify({"error": "model must be string"}), 400
         logger.info(
-            "Evaluation request received: client_ip=%s async=%s justify=%s resume=%s model=%s",
+            "Evaluation request received: client_ip=%s async=%s justify=%s summary=%s model=%s",
             request_client_ip(),
             async_requested,
             justify,
-            resume,
+            summary_requested,
             model or ollama_client().engine(),
         )
 
@@ -1427,7 +1427,7 @@ def create_app() -> Flask:
                     model,
                     timeout_override,
                     justify,
-                    resume,
+                    summary_requested,
                 )
                 return jsonify(public_job(job)), 202
             if not queue_allow_sync(CONFIG):
@@ -1437,7 +1437,7 @@ def create_app() -> Flask:
                 model,
                 timeout_override,
                 justify,
-                resume,
+                summary_requested,
             )
         except json.JSONDecodeError as error:
             logger.error("Ollama justified evaluation returned invalid JSON: %s", error)

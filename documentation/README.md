@@ -212,7 +212,7 @@ New `POST /evaluate` requests log:
 - client IP, using the first `X-Forwarded-For` value when present
 - `async` flag
 - `justify` flag
-- `resume` flag
+- `summary` flag
 - selected model
 
 Status and result polling routes do not emit this new-query log line.
@@ -272,7 +272,7 @@ Server behavior:
 - corrects a UUID internally only when exactly one character is wrong and only one taxonomy UUID matches
 - maps UUIDs back to public taxonomy labels
 - when `justify=true`, makes a second Ollama call and keeps only labels justified by that second call
-- when `resume=true`, makes one additional Ollama call and adds `resum` to the final JSON; the summary continues from the justification context when `justify=true`, otherwise from the taxonomy tagging context
+- when `summary=true`, makes one additional Ollama call and adds `resum` to the final JSON; the summary continues from the justification context when `justify=true`, otherwise from the taxonomy tagging context
 
 Accepted body formats:
 
@@ -285,7 +285,7 @@ Query parameters:
 - `timeout`: optional positive integer seconds, max `900`
 - `include_raw`: optional `1`, `true`, or `yes`
 - `justify`: optional `1`, `true`, or `yes`
-- `resume`: optional `1`, `true`, or `yes`
+- `summary`: optional `1`, `true`, or `yes`
 - `async`: optional `1`, `true`, or `yes` to queue work and return a job ID
 
 JSON body parameters:
@@ -296,7 +296,7 @@ JSON body parameters:
 - `timeout`: optional positive integer seconds, max `900`
 - `include_raw`: optional boolean
 - `justify`: optional boolean
-- `resume`: optional boolean
+- `summary`: optional boolean
 - `async`: optional boolean
 
 Raw Markdown example:
@@ -318,7 +318,7 @@ curl -X POST 'http://127.0.0.1:5151/evaluate' \
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
     "model": "gemma4:31b",
     "justify": true,
-    "resume": true,
+    "summary": true,
     "include_raw": false,
     "async": false
   }'
@@ -333,7 +333,7 @@ curl -X POST 'http://127.0.0.1:5151/evaluate' \
   -d '{
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
     "justify": true,
-    "resume": true,
+    "summary": true,
     "async": true
   }'
 ```
@@ -363,7 +363,7 @@ Response:
     }
   ],
   "justify": true,
-  "resume": true,
+  "summary": true,
   "resum": "The channel dump advertises leaked databases and credential dumps.",
   "processing_time_seconds": 12.345,
   "truncated": false,
@@ -507,11 +507,11 @@ python3 demo/test_classify.py
 python3 demo/test_classify.py --model gemma4:31b
 python3 demo/test_classify.py --model gemma4:31b --warmup
 python3 demo/test_classify.py --justify
-python3 demo/test_classify.py --resume
+python3 demo/test_classify.py --summary
 python3 demo/test_classify.py --list-model
 python3 demo/test_classify.py --token paste-generated-token-here
 python3 demo/test_classify_queue.py --justify
-python3 demo/test_classify_queue.py --resume
+python3 demo/test_classify_queue.py --summary
 python3 demo/test_classify_queue.py --token paste-generated-token-here
 ```
 
@@ -536,7 +536,7 @@ print(models)
 result = client.evaluate_markdown(
     "# Channel dump\n\nSelling leaked databases and credential dumps.",
     justify=True,
-    resume=True,
+    summary=True,
 )
 print(result["labels"])
 ```
@@ -547,7 +547,7 @@ Client methods:
 - `ClassificationClient(api_token="paste-generated-token-here")`
 - `ClassificationClient.get_models(capability="completion")`
 - `ClassificationClient.warmup_model(model=None, timeout=None)`
-- `ClassificationClient.evaluate_markdown(markdown, model=None, timeout=None, include_raw=False, justify=False, resume=False)`
+- `ClassificationClient.evaluate_markdown(markdown, model=None, timeout=None, include_raw=False, justify=False, summary=False)`
 
 ## Notes
 
