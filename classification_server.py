@@ -17,17 +17,21 @@ import sys
 import threading
 import time
 import uuid
+from functools import partial
 from queue import Queue
 from typing import Any
 
 import requests
 import yaml
-from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, jsonify, request
 from flask_httpauth import HTTPTokenAuth
 from rich.logging import RichHandler
 from werkzeug.exceptions import RequestEntityTooLarge
 
+from lib import health as health_lib
+from lib import ollama
+from lib import scheduler as scheduler_lib
+from lib import uids
 from queries import (
     TAXONOMY_EVALUATION_QUERY,
     TAXONOMY_JUSTIFIED_EVALUATION_QUERY,
@@ -48,12 +52,8 @@ DEFAULT_TAXONOMY_CACHE_TTL_DAYS = 30
 DEFAULT_TAXONOMY_FETCH_TIMEOUT = 30
 DEFAULT_JOB_CACHE_PATH = os.path.join(THIS_DIR, ".cache", "classification_jobs")
 DEFAULT_JOB_CACHE_TTL_HOURS = 24
-DEFAULT_JOB_STALE_TTL_HOURS = 24
-DEFAULT_QUEUE_SCHEDULER_INTERVAL_SECONDS = 30
 DEFAULT_JOB_WORKERS = 1
 DEFAULT_LOG_RETENTION_DAYS = 30
-DEFAULT_HEALTH_SCHEDULER_INTERVAL_SECONDS = 30
-DEFAULT_HEALTH_TIMEOUT_SECONDS = 5
 
 
 def print_meta() -> None:
@@ -193,26 +193,12 @@ CONTENT_CLASSIFICATION_TAGS: list[dict[str, str]] = []
 JOB_QUEUE: Queue[str] = Queue()
 JOB_LOCK = threading.Lock()
 JOB_WORKERS_STARTED = False
-JOB_SCHEDULER: BackgroundScheduler | None = None
-JOB_SCHEDULER_LOCK = threading.Lock()
 QUEUED_JOB_IDS: set[str] = set()
 RUNNING_JOB_IDS: set[str] = set()
-HEALTH_LOCK = threading.Lock()
-HEALTH_STATE: dict[str, Any] = {
-    "status": "error",
-    "ollama": "unknown",
-    "error": "health probe has not run yet",
-    "checked_at": None,
-}
-LAST_HEALTH_LOG_STATE = ""
 TOKEN_AUTH = HTTPTokenAuth(scheme="Bearer")
 USER_MARKDOWN_TOKEN_LIMIT = 10000
 MAX_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
-UUID_RE = re.compile(
-    r"\b[0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-"
-    r"[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12}\b"
-)
 APPROX_TOKEN_RE = re.compile(r"\S+")
 
 
@@ -237,26 +223,6 @@ def load_config() -> dict[str, Any]:
             continue
     logger.debug("Loaded config: %s", config)
     return config
-
-
-def ollama_api_base(ollama_config: dict[str, Any]) -> str:
-    """
-    Return Ollama API base from api_base or host/port config.
-    """
-    if ollama_config.get("api_base"):
-        return str(ollama_config["api_base"]).rstrip("/")
-    host = str(ollama_config.get("host") or "localhost").strip()
-    port = int(ollama_config.get("port") or 11434)
-    scheme = "http" if "://" not in host else ""
-    prefix = f"{scheme}://" if scheme else ""
-    return f"{prefix}{host}:{port}".rstrip("/")
-
-
-def ollama_engine(ollama_config: dict[str, Any]) -> str:
-    """
-    Return default Ollama engine/model name.
-    """
-    return str(ollama_config.get("engine") or ollama_config.get("model") or "")
 
 
 def configured_listen_host(flask_config: dict[str, Any]) -> str:
@@ -317,63 +283,6 @@ def configure_log_level(config: dict[str, Any]) -> None:
     logger.debug("Log level configured: %s", log_level_name)
 
 
-def get_blacklist(config: dict[str, Any]) -> set[str]:
-    """
-    Return configured model blacklist.
-    """
-    ollama_config = config.get("ollama") or {}
-    values: list[Any] = []
-    for key in ("blacklist", "bblacklist"):
-        for item in (config.get(key), ollama_config.get(key)):
-            if isinstance(item, list):
-                values.extend(item)
-            elif item:
-                values.append(item)
-    return {str(model).strip() for model in values if str(model).strip()}
-
-
-def get_allowlist(config: dict[str, Any]) -> set[str]:
-    """
-    Return configured model allowlist.
-    """
-    ollama_config = config.get("ollama") or {}
-    values: list[Any] = []
-    for key in ("allowlist", "allowed_models"):
-        for item in (config.get(key), ollama_config.get(key)):
-            if isinstance(item, list):
-                values.extend(item)
-            elif item:
-                values.append(item)
-    return {str(model).strip() for model in values if str(model).strip()}
-
-
-def ensure_model_allowed(model_name: str, config: dict[str, Any]) -> None:
-    """
-    Reject model use outside configured policy.
-    """
-    allowlist = get_allowlist(config)
-    if allowlist and model_name not in allowlist:
-        raise ValueError(f"model is not allowed: {model_name}")
-    if model_name in get_blacklist(config):
-        raise ValueError(f"model is blacklisted: {model_name}")
-
-
-def ollama_request(
-    session: requests.Session,
-    method: str,
-    url: str,
-    timeout: int,
-    **kwargs: Any,
-) -> dict[str, Any]:
-    """
-    Run an Ollama API request and return decoded JSON.
-    """
-    logger.debug("Ollama request: %s %s", method, url)
-    response = session.request(method, url, timeout=timeout, **kwargs)
-    response.raise_for_status()
-    return response.json()
-
-
 def parse_timeout(value: Any) -> int | None:
     """
     Parse optional request timeout override.
@@ -389,19 +298,6 @@ def parse_timeout(value: Any) -> int | None:
     if timeout > MAX_TIMEOUT_SECONDS:
         raise ValueError(f"timeout must be <= {MAX_TIMEOUT_SECONDS}")
     return timeout
-
-
-def configured_timeout(ollama_config: dict[str, Any]) -> int:
-    """
-    Return configured Ollama timeout capped by server max.
-    """
-    try:
-        timeout = int(ollama_config.get("timeout") or 300)
-    except (TypeError, ValueError) as error:
-        raise ValueError("ollama timeout must be integer") from error
-    if timeout <= 0:
-        raise ValueError("ollama timeout must be positive")
-    return min(timeout, MAX_TIMEOUT_SECONDS)
 
 
 def configured_max_body_bytes(config: dict[str, Any]) -> int:
@@ -421,118 +317,6 @@ def configured_max_body_bytes(config: dict[str, Any]) -> int:
     if size <= 0:
         raise ValueError("max_body_bytes must be positive")
     return size
-
-
-def human_size(size_bytes: int | None) -> str:
-    """
-    Convert byte count to compact human-readable value.
-    """
-    if size_bytes is None:
-        return "unknown"
-    size = float(size_bytes)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < 1024 or unit == "TB":
-            return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} {unit}"
-        size /= 1024
-    return f"{size_bytes} B"
-
-
-def extract_context(show_data: dict[str, Any]) -> int | None:
-    """
-    Extract context length from Ollama show response.
-    """
-    model_info = show_data.get("model_info") or {}
-    for key, value in model_info.items():
-        if key.endswith(".context_length") or key == "context_length":
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                logger.debug("Invalid context value for %s: %r", key, value)
-
-    parameters = show_data.get("parameters")
-    if isinstance(parameters, str):
-        for line in parameters.splitlines():
-            parts = line.split()
-            if len(parts) == 2 and parts[0] in {"num_ctx", "context_length"}:
-                try:
-                    return int(parts[1])
-                except ValueError:
-                    logger.debug("Invalid parameter context line: %s", line)
-    return None
-
-
-def list_ollama_models(config: dict[str, Any]) -> list[dict[str, Any]]:
-    """
-    List Ollama models and log each model context length in debug output.
-    """
-    ollama_config = config.get("ollama") or {}
-    api_base = ollama_api_base(ollama_config)
-    timeout = configured_timeout(ollama_config)
-    blacklist = get_blacklist(config)
-    allowlist = get_allowlist(config)
-
-    logger.info("Connecting to Ollama: %s", api_base)
-    if allowlist:
-        logger.info("Allowed models: %s", ", ".join(sorted(allowlist)))
-    if blacklist:
-        logger.info("Blacklisted models: %s", ", ".join(sorted(blacklist)))
-    session = requests.Session()
-
-    tags = ollama_request(session, "GET", f"{api_base}/api/tags", timeout)
-    models = sorted(tags.get("models") or [], key=lambda item: item.get("name", ""))
-    logger.info("Ollama models found: %d", len(models))
-
-    output = []
-    for model in models:
-        name = model.get("name")
-        if not name:
-            logger.debug("Skipping malformed Ollama model entry: %s", model)
-            continue
-        if allowlist and name not in allowlist:
-            logger.debug("Skipping non-allowed Ollama model: name=%s", name)
-            continue
-        if name in blacklist:
-            logger.debug("Skipping blacklisted Ollama model: name=%s", name)
-            continue
-
-        show_data = ollama_request(
-            session,
-            "POST",
-            f"{api_base}/api/show",
-            timeout,
-            json={"model": name},
-        )
-        capabilities = show_data.get("capabilities") or []
-        if "completion" not in capabilities:
-            logger.debug(
-                "Skipping non-completion Ollama model: name=%s capabilities=%s",
-                name,
-                capabilities,
-            )
-            continue
-
-        context_length = extract_context(show_data)
-        details = show_data.get("details") or model.get("details") or {}
-        row = {
-            "name": name,
-            "id": model.get("digest", "")[:12],
-            "size": human_size(model.get("size")),
-            "modified_at": model.get("modified_at"),
-            "architecture": details.get("family") or details.get("format"),
-            "parameters": details.get("parameter_size"),
-            "quantization": details.get("quantization_level"),
-            "capabilities": capabilities,
-            "context_length": context_length,
-        }
-        output.append(row)
-        logger.debug(
-            "Ollama model context: name=%s context_length=%s",
-            row["name"],
-            row["context_length"],
-        )
-
-    logger.info("Ollama completion models cached: %d", len(output))
-    return output
 
 
 def taxonomy_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -780,20 +564,6 @@ def content_classification_prompt_entries() -> list[str]:
     return entries
 
 
-def parse_uuid_output(raw_output: str) -> list[str]:
-    """
-    Extract unique UUIDs from model output.
-    """
-    seen = set()
-    output = []
-    for match in UUID_RE.finditer(raw_output):
-        uid = match.group(0).lower()
-        if uid not in seen:
-            seen.add(uid)
-            output.append(uid)
-    return output
-
-
 def parse_bool(value: Any) -> bool:
     """
     Parse truthy API values.
@@ -937,36 +707,6 @@ def queue_cache_ttl_seconds(config: dict[str, Any]) -> int:
     return ttl_hours * 60 * 60
 
 
-def queue_stale_job_ttl_seconds(config: dict[str, Any]) -> int:
-    """
-    Return stale queued/running job TTL in seconds.
-    """
-    value = queue_config(config).get("stale_job_ttl_hours", DEFAULT_JOB_STALE_TTL_HOURS)
-    try:
-        ttl_hours = int(value)
-    except (TypeError, ValueError) as error:
-        raise ValueError("queue stale_job_ttl_hours must be integer") from error
-    if ttl_hours <= 0:
-        raise ValueError("queue stale_job_ttl_hours must be positive")
-    return ttl_hours * 60 * 60
-
-
-def queue_scheduler_interval_seconds(config: dict[str, Any]) -> int:
-    """
-    Return queue scheduler interval in seconds.
-    """
-    value = queue_config(config).get(
-        "scheduler_interval_seconds", DEFAULT_QUEUE_SCHEDULER_INTERVAL_SECONDS
-    )
-    try:
-        interval = int(value)
-    except (TypeError, ValueError) as error:
-        raise ValueError("queue scheduler_interval_seconds must be integer") from error
-    if interval <= 0:
-        raise ValueError("queue scheduler_interval_seconds must be positive")
-    return interval
-
-
 def queue_worker_count(config: dict[str, Any]) -> int:
     """
     Return async queue worker count.
@@ -979,50 +719,6 @@ def queue_worker_count(config: dict[str, Any]) -> int:
     if workers <= 0:
         raise ValueError("queue workers must be positive")
     return workers
-
-
-def health_config(config: dict[str, Any]) -> dict[str, Any]:
-    """
-    Return health probe config.
-    """
-    return config.get("health") or {}
-
-
-def health_enabled(config: dict[str, Any]) -> bool:
-    """
-    Return true when health background probe is enabled.
-    """
-    return config_bool(health_config(config).get("enabled"), True)
-
-
-def health_scheduler_interval_seconds(config: dict[str, Any]) -> int:
-    """
-    Return health probe scheduler interval.
-    """
-    value = health_config(config).get(
-        "scheduler_interval_seconds", DEFAULT_HEALTH_SCHEDULER_INTERVAL_SECONDS
-    )
-    try:
-        interval = int(value)
-    except (TypeError, ValueError) as error:
-        raise ValueError("health scheduler_interval_seconds must be integer") from error
-    if interval <= 0:
-        raise ValueError("health scheduler_interval_seconds must be positive")
-    return interval
-
-
-def health_timeout_seconds(config: dict[str, Any]) -> int:
-    """
-    Return health probe timeout.
-    """
-    value = health_config(config).get("timeout_seconds", DEFAULT_HEALTH_TIMEOUT_SECONDS)
-    try:
-        timeout = int(value)
-    except (TypeError, ValueError) as error:
-        raise ValueError("health timeout_seconds must be integer") from error
-    if timeout <= 0:
-        raise ValueError("health timeout_seconds must be positive")
-    return timeout
 
 
 def job_path(job_id: str) -> str:
@@ -1219,240 +915,48 @@ def evaluation_worker() -> None:
             JOB_QUEUE.task_done()
 
 
-def iter_job_paths() -> list[str]:
+def queue_scheduler_context() -> scheduler_lib.QueueSchedulerContext:
     """
-    Return cached job JSON file paths.
+    Return queue scheduler dependencies.
     """
-    directory = queue_cache_path(CONFIG)
-    try:
-        filenames = os.listdir(directory)
-    except FileNotFoundError:
-        return []
-
-    paths = []
-    for filename in filenames:
-        if not filename.endswith(".json"):
-            continue
-        paths.append(os.path.join(directory, filename))
-    return paths
-
-
-def read_job_path(path: str) -> dict[str, Any] | None:
-    """
-    Read and validate job JSON by path.
-    """
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            job = json.load(handle)
-        if not isinstance(job, dict) or not job.get("id"):
-            return None
-        uuid.UUID(str(job["id"]))
-        return job
-    except (OSError, ValueError, json.JSONDecodeError):
-        logger.warning("Queue scheduler ignored invalid job file: %s", path)
-        return None
-
-
-def job_age_seconds(job: dict[str, Any]) -> float:
-    """
-    Return job age in seconds.
-    """
-    return now_seconds() - float(job.get("created_at", 0))
-
-
-def queue_scheduler_tick() -> dict[str, int]:
-    """
-    Cleanup stale jobs and requeue persisted queued jobs.
-    """
-    summary = {
-        "deleted": 0,
-        "requeued": 0,
-        "stale_failed": 0,
-        "invalid": 0,
-    }
-    cache_ttl = queue_cache_ttl_seconds(CONFIG)
-    stale_ttl = queue_stale_job_ttl_seconds(CONFIG)
-
-    for path in iter_job_paths():
-        job = read_job_path(path)
-        if job is None:
-            summary["invalid"] += 1
-            continue
-
-        status = str(job.get("status") or "")
-        age = job_age_seconds(job)
-        job_id = str(job["id"])
-
-        if status in {"done", "failed", "expired"} and age > cache_ttl:
-            try:
-                os.remove(path)
-                summary["deleted"] += 1
-                logger.info("Queue scheduler deleted expired job: id=%s", job_id)
-            except FileNotFoundError:
-                continue
-            except OSError as error:
-                logger.error(
-                    "Queue scheduler failed to delete job %s: %s", job_id, error
-                )
-            continue
-
-        if status == "queued":
-            if age > stale_ttl:
-                job["status"] = "failed"
-                job["error"] = "queued job expired before dispatch"
-                job["updated_at"] = now_seconds()
-                write_job(job)
-                summary["stale_failed"] += 1
-                logger.info(
-                    "Queue scheduler marked stale queued job failed: id=%s", job_id
-                )
-                continue
-            if enqueue_job_id(job_id):
-                summary["requeued"] += 1
-                logger.info("Queue scheduler requeued persisted job: id=%s", job_id)
-            continue
-
-        if status == "running" and age > stale_ttl:
-            with JOB_LOCK:
-                is_running_here = job_id in RUNNING_JOB_IDS
-            if is_running_here:
-                continue
-            job["status"] = "failed"
-            job["error"] = "running job stale after server restart"
-            job["updated_at"] = now_seconds()
-            write_job(job)
-            summary["stale_failed"] += 1
-            logger.info(
-                "Queue scheduler marked stale running job failed: id=%s", job_id
-            )
-
-    if any(summary.values()):
-        logger.info(
-            "Queue scheduler tick: deleted=%s requeued=%s stale_failed=%s invalid=%s",
-            summary["deleted"],
-            summary["requeued"],
-            summary["stale_failed"],
-            summary["invalid"],
-        )
-    return summary
-
-
-def health_state() -> dict[str, Any]:
-    """
-    Return copy of current health state.
-    """
-    with HEALTH_LOCK:
-        return dict(HEALTH_STATE)
-
-
-def set_health_state(status: str, ollama: str, error: str | None = None) -> None:
-    """
-    Store and log health state changes.
-    """
-    global LAST_HEALTH_LOG_STATE  # pylint: disable=global-statement
-    state = {
-        "status": status,
-        "ollama": ollama,
-        "checked_at": now_seconds(),
-    }
-    if error:
-        state["error"] = error
-
-    log_key = json.dumps(
-        {"status": status, "ollama": ollama, "error": error or ""},
-        sort_keys=True,
+    return scheduler_lib.QueueSchedulerContext(
+        config=CONFIG,
+        logger=logger,
+        queue_cache_path=queue_cache_path,
+        queue_cache_ttl_seconds=queue_cache_ttl_seconds,
+        now_seconds=now_seconds,
+        write_job=write_job,
+        enqueue_job_id=enqueue_job_id,
+        running_job_ids=RUNNING_JOB_IDS,
+        job_lock=JOB_LOCK,
     )
-    with HEALTH_LOCK:
-        HEALTH_STATE.clear()
-        HEALTH_STATE.update(state)
-        should_log = log_key != LAST_HEALTH_LOG_STATE
-        if should_log:
-            LAST_HEALTH_LOG_STATE = log_key
-
-    if should_log:
-        if status == "ok":
-            logger.info("Health probe recovered: ollama=ok")
-        else:
-            logger.warning("Health probe failed: ollama=%s error=%s", ollama, error)
-
-
-def health_probe_tick() -> dict[str, Any]:
-    """
-    Probe Ollama and cache health state.
-    """
-    ollama_config = CONFIG.get("ollama") or {}
-    api_base = ollama_api_base(ollama_config)
-    timeout = health_timeout_seconds(CONFIG)
-    try:
-        session = requests.Session()
-        data = ollama_request(session, "GET", f"{api_base}/api/tags", timeout)
-        if not isinstance(data, dict):
-            raise ValueError("invalid ollama health response")
-    except (ValueError, requests.RequestException) as error:
-        set_health_state("error", "error", str(error))
-        return health_state()
-
-    set_health_state("ok", "ok")
-    return health_state()
-
-
-def ensure_app_scheduler() -> BackgroundScheduler:
-    """
-    Return single process-wide APScheduler instance.
-    """
-    global JOB_SCHEDULER  # pylint: disable=global-statement
-    with JOB_SCHEDULER_LOCK:
-        if JOB_SCHEDULER is not None and JOB_SCHEDULER.running:
-            return JOB_SCHEDULER
-        scheduler = BackgroundScheduler()
-        scheduler.start()
-        JOB_SCHEDULER = scheduler
-        return scheduler
 
 
 def start_queue_scheduler() -> None:
     """
-    Start one APScheduler background scheduler for queue maintenance.
+    Start queue maintenance scheduler.
     """
-    if not queue_enabled(CONFIG):
-        return
-    scheduler = ensure_app_scheduler()
-    if scheduler.get_job("queue_scheduler") is not None:
-        return
-    scheduler.add_job(
-        func=queue_scheduler_tick,
-        trigger="interval",
-        seconds=queue_scheduler_interval_seconds(CONFIG),
-        max_instances=1,
-        id="queue_scheduler",
-        replace_existing=True,
-    )
-    logger.info(
-        "Queue scheduler started: interval_seconds=%s",
-        queue_scheduler_interval_seconds(CONFIG),
+    scheduler_lib.start_queue_scheduler(
+        enabled=queue_enabled(CONFIG),
+        interval_seconds=scheduler_lib.queue_scheduler_interval_seconds(CONFIG),
+        tick=partial(scheduler_lib.queue_scheduler_tick, queue_scheduler_context()),
+        logger=logger,
     )
 
 
 def start_health_scheduler() -> None:
     """
-    Start APScheduler job for cached health probing.
+    Start cached health probe scheduler.
     """
-    if not health_enabled(CONFIG):
-        return
-    scheduler = ensure_app_scheduler()
-    if scheduler.get_job("health_probe") is not None:
-        return
-    scheduler.add_job(
-        func=health_probe_tick,
-        trigger="interval",
-        seconds=health_scheduler_interval_seconds(CONFIG),
-        max_instances=1,
-        id="health_probe",
-        replace_existing=True,
-    )
-    logger.info(
-        "Health scheduler started: interval_seconds=%s",
-        health_scheduler_interval_seconds(CONFIG),
+    scheduler_lib.start_health_scheduler(
+        interval_seconds=health_lib.health_scheduler_interval_seconds(CONFIG),
+        tick=partial(
+            health_lib.health_probe_tick,
+            CONFIG,
+            ollama_client().health,
+            logger,
+        ),
+        logger=logger,
     )
 
 
@@ -1473,6 +977,13 @@ def start_job_workers() -> None:
         )
         worker.start()
     JOB_WORKERS_STARTED = True
+
+
+def ollama_client() -> ollama.OllamaClient:
+    """
+    Return configured Ollama client.
+    """
+    return ollama.OllamaClient(CONFIG, MAX_TIMEOUT_SECONDS, logger)
 
 
 def strip_json_fence(text: str) -> str:
@@ -1521,7 +1032,7 @@ def parse_justified_output(raw_output: str) -> list[dict[str, str]]:
         else:
             mapped_items = []
             for key, value in data.items():
-                uid_values = parse_uuid_output(str(key))
+                uid_values = uids.parse_uuid_output(str(key))
                 if not uid_values:
                     continue
                 if isinstance(value, dict):
@@ -1554,7 +1065,7 @@ def parse_justified_output(raw_output: str) -> list[dict[str, str]]:
         if match_value is False or str(match_value).lower() in {"false", "no", "0"}:
             continue
         uid_text = str(item.get("uid") or item.get("uuid") or "")
-        uid_values = parse_uuid_output(uid_text)
+        uid_values = uids.parse_uuid_output(uid_text)
         justification = str(
             item.get("justification")
             or item.get("justifications")
@@ -1568,56 +1079,6 @@ def parse_justified_output(raw_output: str) -> list[dict[str, str]]:
         if uid_values and justification:
             items.append({"uid": uid_values[0], "justification": justification})
     return items
-
-
-def uuid_distance(left: str, right: str) -> int:
-    """
-    Return character distance between two UUID strings.
-    """
-    if len(left) != len(right):
-        return max(len(left), len(right))
-    return sum(
-        1 for left_char, right_char in zip(left, right) if left_char != right_char
-    )
-
-
-def correct_uuid(uid: str, known_uids: set[str]) -> tuple[str | None, bool]:
-    """
-    Correct UID when exactly one known UID differs by one character.
-    """
-    if uid in known_uids:
-        return uid, False
-
-    candidates = [
-        known_uid for known_uid in known_uids if uuid_distance(uid, known_uid) == 1
-    ]
-    if len(candidates) == 1:
-        return candidates[0], True
-    return None, False
-
-
-def resolve_uids(
-    selected_uids: list[str],
-    known_uids: set[str],
-) -> tuple[list[str], list[str], list[dict[str, str]]]:
-    """
-    Resolve selected UIDs with one-character correction.
-    """
-    resolved = []
-    unknown = []
-    corrections = []
-    seen = set()
-    for uid in selected_uids:
-        corrected_uid, corrected = correct_uuid(uid, known_uids)
-        if corrected_uid is None:
-            unknown.append(uid)
-            continue
-        if corrected:
-            corrections.append({"raw_uid": uid, "corrected_uid": corrected_uid})
-        if corrected_uid not in seen:
-            seen.add(corrected_uid)
-            resolved.append(corrected_uid)
-    return resolved, unknown, corrections
 
 
 def truncate_user_markdown(
@@ -1684,14 +1145,11 @@ def evaluate_markdown(
     if not isinstance(markdown, str) or not markdown.strip():
         raise ValueError("data must be non-empty markdown text")
 
-    ollama_config = CONFIG.get("ollama") or {}
-    api_base = ollama_api_base(ollama_config)
-    timeout = timeout_override or configured_timeout(ollama_config)
-    temperature = float(ollama_config.get("temperature", 0.1))
-    model_name = model or ollama_engine(ollama_config)
+    client = ollama_client()
+    model_name = model or client.engine()
     if not model_name:
         raise ValueError("missing model")
-    ensure_model_allowed(model_name, CONFIG)
+    client.ensure_model_allowed(model_name)
 
     user_markdown, input_tokens, input_truncated = truncate_user_markdown(markdown)
     evaluation_query = TAXONOMY_EVALUATION_QUERY.format(
@@ -1704,25 +1162,18 @@ def evaluate_markdown(
     logger.info("Evaluating Markdown with model: %s", model_name)
     session = requests.Session()
     start_time = time.perf_counter()
-    evaluation_response = ollama_request(
+    evaluation_response = client.generate(
         session,
-        "POST",
-        f"{api_base}/api/generate",
-        timeout,
-        json={
-            "model": model_name,
-            "prompt": evaluation_prompt,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-            },
-        },
+        evaluation_prompt,
+        model=model_name,
+        timeout_override=timeout_override,
+        validate_model=False,
     )
     raw_output = str(evaluation_response.get("response", "")).strip()
     by_uid = {tag["uid"]: tag for tag in get_content_classification_tags()}
     known_uids = set(by_uid)
-    selected_uids = parse_uuid_output(raw_output)
-    resolved_uids, _unknown_uids, _corrected_uids = resolve_uids(
+    selected_uids = uids.parse_uuid_output(raw_output)
+    resolved_uids, _unknown_uids, _corrected_uids = uids.resolve_uids(
         selected_uids,
         known_uids,
     )
@@ -1740,19 +1191,12 @@ def evaluate_markdown(
             )
             justification_prompt = f"{justification_query}\n\n# Input\n{user_markdown}"
             logger.info("Justifying taxonomy labels with model: %s", model_name)
-            justification_response = ollama_request(
+            justification_response = client.generate(
                 session,
-                "POST",
-                f"{api_base}/api/generate",
-                timeout,
-                json={
-                    "model": model_name,
-                    "prompt": justification_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                    },
-                },
+                justification_prompt,
+                model=model_name,
+                timeout_override=timeout_override,
+                validate_model=False,
             )
             justification_raw_output = str(
                 justification_response.get("response", "")
@@ -1767,7 +1211,7 @@ def evaluate_markdown(
         selected_uid_set = set(resolved_uids)
         seen = set()
         for item in parse_justified_output(justification_raw_output):
-            corrected_uid, _corrected = correct_uuid(item["uid"], selected_uid_set)
+            corrected_uid, _corrected = uids.correct_uuid(item["uid"], selected_uid_set)
             if corrected_uid is None:
                 continue
             if corrected_uid in seen:
@@ -1802,30 +1246,20 @@ def warmup_model(
     """
     Send a tiny prompt to load a model before timed requests.
     """
-    ollama_config = CONFIG.get("ollama") or {}
-    api_base = ollama_api_base(ollama_config)
-    timeout = timeout_override or configured_timeout(ollama_config)
-    temperature = float(ollama_config.get("temperature", 0.1))
-    model_name = model or ollama_engine(ollama_config)
+    client = ollama_client()
+    model_name = model or client.engine()
     if not model_name:
         raise ValueError("missing model")
-    ensure_model_allowed(model_name, CONFIG)
+    client.ensure_model_allowed(model_name)
 
     logger.info("Warming up model: %s", model_name)
     session = requests.Session()
-    ollama_request(
+    client.generate(
         session,
-        "POST",
-        f"{api_base}/api/generate",
-        timeout,
-        json={
-            "model": model_name,
-            "prompt": "say 'hello world'",
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-            },
-        },
+        "say 'hello world'",
+        model=model_name,
+        timeout_override=timeout_override,
+        validate_model=False,
     )
 
 
@@ -1859,7 +1293,7 @@ def create_app() -> Flask:
 
     @app.get("/health")
     def health_route():
-        state = health_state()
+        state = health_lib.health_state()
         status_code = 200 if state.get("status") == "ok" else 500
         return jsonify(state), status_code
 
@@ -1868,7 +1302,7 @@ def create_app() -> Flask:
     def getmodels():
         capability = request.args.get("capability")
         try:
-            MODEL_CACHE[:] = list_ollama_models(CONFIG)
+            MODEL_CACHE[:] = ollama_client().list_models()
         except requests.RequestException as error:
             logger.error("Ollama model listing failed: %s", error)
             return jsonify({"error": "ollama model listing failed"}), 502
@@ -1924,7 +1358,7 @@ def create_app() -> Flask:
             request_client_ip(),
             async_requested,
             justify,
-            model or ollama_engine(CONFIG.get("ollama") or {}),
+            model or ollama_client().engine(),
         )
 
         try:
@@ -2032,7 +1466,7 @@ def main() -> int:
     print_meta()
     try:
         ensure_content_classification_taxonomy(CONFIG)
-        MODEL_CACHE[:] = list_ollama_models(CONFIG)
+        MODEL_CACHE[:] = ollama_client().list_models()
     except ValueError as error:
         logger.error("Invalid config: %s", error)
         return 1

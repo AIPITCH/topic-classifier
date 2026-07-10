@@ -48,7 +48,6 @@ queue:
   stale_job_ttl_hours: 24
   workers: 1
 health:
-  enabled: true
   scheduler_interval_seconds: 30
   timeout_seconds: 5
 ollama:
@@ -291,8 +290,8 @@ Logs:
 Health:
 
 - `GET /health` does not require authentication
-- scheduler can be disabled with `health.enabled: false`
 - `/health` never calls Ollama directly; it returns cached scheduler probe state
+- health probe runs once immediately at app startup, then on schedule
 - APScheduler probes Ollama every `health.scheduler_interval_seconds`, default 30
 - the probe uses `health.timeout_seconds`, default 5
 - response is `200` when last probe succeeded
@@ -316,8 +315,8 @@ Healthy response:
 ```json
 {
   "status": "ok",
-  "ollama": "ok",
-  "checked_at": 1783660020.123
+  "ai_engine": "ok",
+  "last_check": 1783660020
 }
 ```
 
@@ -326,9 +325,9 @@ Unhealthy response:
 ```json
 {
   "status": "error",
-  "ollama": "error",
+  "ai_engine": "error",
   "error": "ollama timeout",
-  "checked_at": 1783660020.123
+  "last_check": 1783660020
 }
 ```
 

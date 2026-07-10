@@ -55,7 +55,6 @@ queue:
   stale_job_ttl_hours: 24
   workers: 1
 health:
-  enabled: true
   scheduler_interval_seconds: 30
   timeout_seconds: 5
 ollama:
@@ -220,17 +219,15 @@ Status and result polling routes do not emit this new-query log line.
 
 `GET /health` is intended for probes and load balancers. It does not require authentication.
 
-The route never calls Ollama directly. APScheduler probes Ollama in the background every `health.scheduler_interval_seconds`, default 30 seconds, using `health.timeout_seconds`, default 5 seconds. `/health` returns the cached probe state immediately.
-
-The background probe can be disabled with `health.enabled: false`; in that case `/health` keeps returning the cached state.
+The route never calls Ollama directly. APScheduler runs one probe immediately at app startup, then probes Ollama in the background every `health.scheduler_interval_seconds`, default 30 seconds, using `health.timeout_seconds`, default 5 seconds. `/health` returns the cached probe state immediately.
 
 Healthy response returns HTTP 200:
 
 ```json
 {
   "status": "ok",
-  "ollama": "ok",
-  "checked_at": 1783660020.123
+  "ai_engine": "ok",
+  "last_check": 1783660020
 }
 ```
 
@@ -239,9 +236,9 @@ Unhealthy response returns HTTP 500:
 ```json
 {
   "status": "error",
-  "ollama": "error",
+  "ai_engine": "error",
   "error": "ollama timeout",
-  "checked_at": 1783660020.123
+  "last_check": 1783660020
 }
 ```
 
