@@ -17,7 +17,15 @@ Start server:
 python3 classification_server.py
 ```
 
-Default config: `config.yaml`
+Default config template: `config.yaml.default`
+
+Create local config:
+
+```bash
+cp config.yaml.default config.yaml
+```
+
+`config.yaml` is ignored by git so local tokens and deployment settings do not get committed.
 
 ```yaml
 log: info
@@ -58,6 +66,8 @@ Override config path:
 CCE_CONFIG=/path/to/config.yaml python3 classification_server.py
 ```
 
+If local `config.yaml` is missing, the server and Python client fall back to `config.yaml.default`.
+
 Prompt templates live in `query/*.txt` and are mapped by `query/queries.json`.
 The taxonomy is downloaded from `taxonomy.url` into `taxonomy.cache_path` at
 startup when missing or older than `taxonomy.cache_ttl_days`. Existing stale
@@ -75,7 +85,7 @@ Generate a token:
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Enable auth in `config.yaml`:
+Enable auth in local `config.yaml`:
 
 ```yaml
 auth:

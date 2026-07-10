@@ -6,3 +6,4 @@
 - Add independent queued API demo script.
 - Add configurable dated daily API log rotation and client IP logging for new evaluation requests.
 - Add optional Bearer token authentication.
+- Track `config.yaml.default` and ignore local `config.yaml`.

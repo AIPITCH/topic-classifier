@@ -16,6 +16,7 @@ import yaml
 
 API_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_CONFIG_PATH = os.path.join(API_DIR, "config.yaml")
+DEFAULT_CONFIG_TEMPLATE_PATH = os.path.join(API_DIR, "config.yaml.default")
 
 
 class ClassificationError(RuntimeError):
@@ -28,12 +29,19 @@ def load_config(path: str = DEFAULT_CONFIG_PATH) -> dict[str, Any]:
     """
     Load project YAML config.
     """
-    config_path = os.environ.get("CCE_CONFIG") or path
-    try:
-        with open(config_path, "r", encoding="utf-8") as handle:
-            return yaml.safe_load(handle) or {}
-    except FileNotFoundError:
-        return {}
+    for config_path in (
+        os.environ.get("CCE_CONFIG"),
+        path,
+        DEFAULT_CONFIG_TEMPLATE_PATH,
+    ):
+        if not config_path:
+            continue
+        try:
+            with open(config_path, "r", encoding="utf-8") as handle:
+                return yaml.safe_load(handle) or {}
+        except FileNotFoundError:
+            continue
+    return {}
 
 
 def classifier_api_base(config: dict[str, Any] | None = None) -> str:
@@ -59,7 +67,7 @@ class ClassificationClient:
     @classmethod
     def from_config(cls, path: str = DEFAULT_CONFIG_PATH) -> "ClassificationClient":
         """
-        Build client from project config.yaml.
+        Build client from project config.
         """
         config = load_config(path)
         ollama_config = config.get("ollama") or {}

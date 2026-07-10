@@ -34,6 +34,7 @@ from queries import (
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(THIS_DIR, "config.yaml")
+DEFAULT_CONFIG_TEMPLATE_PATH = os.path.join(THIS_DIR, "config.yaml.default")
 DEFAULT_TAXONOMY_URL = (
     "https://raw.githubusercontent.com/MISP/misp-taxonomies/main/"
     "content-classification/machinetag.json"
@@ -198,12 +199,13 @@ APPROX_TOKEN_RE = re.compile(r"\S+")
 
 def load_config() -> dict[str, Any]:
     """
-    Load YAML config from config.yaml.
+    Load YAML config.
     """
     config = {}
     for config_path in (
         os.environ.get("CCE_CONFIG"),
         DEFAULT_CONFIG_PATH,
+        DEFAULT_CONFIG_TEMPLATE_PATH,
     ):
         if not config_path:
             continue

@@ -10,7 +10,15 @@ pip install -r requirements.txt
 
 ## Configure
 
-Edit `config.yaml`:
+Copy the tracked default config, then edit local `config.yaml`:
+
+```bash
+cp config.yaml.default config.yaml
+```
+
+`config.yaml` is ignored by git so local tokens and deployment settings do not get committed.
+
+Default config template:
 
 ```yaml
 log: info
@@ -64,7 +72,7 @@ Generate a token:
 python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
 ```
 
-Enable auth in `config.yaml`:
+Enable auth in local `config.yaml`:
 
 ```yaml
 auth:
@@ -94,6 +102,8 @@ Override config path:
 ```bash
 CCE_CONFIG=/path/to/config.yaml python3 classification_server.py
 ```
+
+If local `config.yaml` is missing, the server falls back to `config.yaml.default`.
 
 Default base URL:
 
@@ -258,5 +268,7 @@ The queue demo uses a 120 second request timeout by default.
 - `query/*.txt`: prompt templates
 - `.cache/content-classification.json`: runtime taxonomy cache, ignored by git
 - `log/cc-YYYY-MM-DD.log`: runtime dated API logs when `logrotate.enabled` is true, ignored by git
+- `config.yaml.default`: tracked default config template
+- `config.yaml`: local runtime config, ignored by git
 - `documentation/README.md`: full route documentation
 - `demo/test_classify_queue.py`: independent queued API example
