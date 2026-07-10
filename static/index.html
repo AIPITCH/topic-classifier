@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Topic Classifier API</title>
+    <link rel="stylesheet" href="/static/site.css" />
+    <link rel="icon" href="/static/topic-classifier.svg" type="image/svg+xml" />
+  </head>
+  <body>
+    <header class="siteHeader">
+      <div class="shell topbar">
+        <a class="brand" href="/" aria-label="Topic Classifier API home">
+          <span class="brandMark">TC</span>
+          <span>Topic Classifier</span>
+        </a>
+        <nav aria-label="Primary navigation">
+          <a href="https://www.circl.lu/">CIRCL</a>
+          <a href="https://github.com/AIPITCH/topic-classifier">Source</a>
+        </nav>
+      </div>
+    </header>
+    <main class="page">
+      <section class="hero">
+        <div class="heroText">
+          <p class="eyebrow">AIPITCH API service</p>
+          <h1>Topic classification.</h1>
+          <p class="lead">
+            API service for classifying content with the MISP
+            content-classification taxonomy through an Ollama-backed AI engine.
+            This project is part of AIPITCH, an international consortium focused
+            on AI-based tools for cybersecurity operations, founded by the
+            European Commission.
+          </p>
+        </div>
+        <div class="panel" aria-label="Service status summary">
+          <div class="statusLine">
+            <span id="statusDot" class="dot unknown"></span>
+            <span id="statusText">Checking health</span>
+          </div>
+          <dl>
+            <div>
+              <dt>Taxonomy</dt>
+              <dd>MISP content-classification</dd>
+            </div>
+            <div>
+              <dt>Open Source Project</dt>
+              <dd>
+                <a href="https://github.com/AIPITCH/topic-classifier" target="_blank" rel="noopener">
+                  Topic Classifier on GitHub
+                </a>
+              </dd>
+            </div>
+            <div>
+              <dt>Health</dt>
+              <dd id="lastCheck">Waiting for scheduler probe</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="band">
+        <article>
+          <h2>Classify content</h2>
+          <p>
+            Submit Markdown text and receive matching content-classification
+            labels. Long requests can be queued and fetched later with the job
+            UID. The classification can also be validated and justified by the
+            LLM when needed.
+          </p>
+        </article>
+        <article>
+          <h2>Qualification</h2>
+          <p>
+            Classification accuracy is tested across different sources such as
+            forums and chat content, with techniques to avoid label
+            multiplication and keep the results well qualified.
+          </p>
+        </article>
+        <article>
+          <h2>Classification</h2>
+          <p>
+            The classification engine runs on premise and scores content
+            against the MISP content-classification taxonomy. It can be
+            configured to use different open source models depending on the
+            deployment and available compute.
+            <a
+              href="https://raw.githubusercontent.com/MISP/misp-taxonomies/main/content-classification/machinetag.json"
+              target="_blank"
+              rel="noopener"
+            >
+              Taxonomy JSON
+            </a>
+          </p>
+        </article>
+      </section>
+
+      <section id="circl" class="band">
+        <article>
+          <h2>Who is CIRCL?</h2>
+          <p>
+            CIRCL is the Computer Incident Response Center Luxembourg. It is a
+            public CSIRT focused on incident response, threat intelligence, and
+            security support for organisations. It also contributes to open
+            source to share tools and methods with the security community.
+          </p>
+        </article>
+        <article>
+          <h2>Access on request</h2>
+          <p>
+            This Topic Classifier service is operated by CIRCL and offered on
+            request. Access can be granted by contacting
+            <a href="mailto:info@circl.lu">info@circl.lu</a>.
+          </p>
+        </article>
+        <article>
+          <h2>What it fits</h2>
+          <p>
+            It can be used in surveillance pipelines, CTI workflows, and other
+            security automation chains to classify security-related Markdown
+            content against the MISP content-classification taxonomy using an
+            Ollama-backed AI engine.
+          </p>
+        </article>
+      </section>
+    </main>
+    <script src="/static/site.js"></script>
+  </body>
+</html>

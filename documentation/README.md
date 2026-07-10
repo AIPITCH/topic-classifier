@@ -188,7 +188,8 @@ Queued result cache:
 
 - directory: `queue.cache_path`
 - default: `.cache/classification_jobs`
-- contents: one JSON file per queued job UUID
+- contents: one JSON file per queued job UUID, sharded by the first UUID character
+- layout example: `queue.cache_path/5/5555abcd-1234-5678-90ab-0123456789ab.json`
 - job file data: request metadata, `queued`/`running`/`done`/`failed`/`expired` status, timestamps, error text, and result data
 - TTL: finished and failed jobs expire after `queue.cache_ttl_hours`
 - cleanup: APScheduler runs every `queue.scheduler_interval_seconds`, default 30 seconds

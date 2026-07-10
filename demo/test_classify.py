@@ -61,6 +61,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Minimal example for the local evaluation API."
     )
+    parser.add_argument("--url", help="Classifier API base URL override.")
+    parser.add_argument(
+        "--api-base",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--model",
         help="Optional Ollama model override.",
@@ -99,8 +104,11 @@ def main() -> int:
     Run demo command.
     """
     args = parse_args()
+    api_base = args.url or args.api_base
     model = args.model
     client = ClassificationClient.from_config()
+    if api_base:
+        client.api_base = api_base
     client.timeout = args.timeout
     client.api_token = args.token
 

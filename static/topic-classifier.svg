@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Topic Classifier">
+  <rect width="96" height="96" rx="16" fill="#172026"/>
+  <path d="M22 26h52v10H22zM22 43h35v10H22zM22 60h46v10H22z" fill="#fff"/>
+  <circle cx="70" cy="48" r="12" fill="#c7362f"/>
+  <path d="M64 48l4 4 8-9" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

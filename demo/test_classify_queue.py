@@ -174,9 +174,12 @@ def parse_args() -> argparse.Namespace:
         description="Submit a queued evaluation request and poll for result."
     )
     parser.add_argument(
-        "--api-base",
-        default="http://127.0.0.1:5151",
+        "--url",
         help="Classifier API base URL.",
+    )
+    parser.add_argument(
+        "--api-base",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--model",
@@ -223,6 +226,7 @@ def main() -> int:
     Run queued API demo.
     """
     args = parse_args()
+    args.api_base = args.url or args.api_base or "http://127.0.0.1:5151"
     markdown = load_sample_markdown()
 
     try:

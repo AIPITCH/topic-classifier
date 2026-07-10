@@ -81,19 +81,35 @@ def queue_scheduler_interval_seconds(config: dict[str, Any]) -> int:
 
 def iter_job_paths(context: QueueSchedulerContext) -> list[str]:
     """
-    Return cached job JSON file paths.
+    Return cached job JSON file paths, including sharded directories.
     """
     directory = context.queue_cache_path(context.config)
-    try:
-        filenames = os.listdir(directory)
-    except FileNotFoundError:
-        return []
-
     paths = []
-    for filename in filenames:
-        if not filename.endswith(".json"):
-            continue
-        paths.append(os.path.join(directory, filename))
+    try:
+        entries = os.scandir(directory)
+    except FileNotFoundError:
+        return paths
+
+    with entries:
+        for entry in entries:
+            if entry.is_file() and entry.name.endswith(".json"):
+                paths.append(entry.path)
+                continue
+            if not entry.is_dir():
+                continue
+            try:
+                shard_entries = os.scandir(entry.path)
+            except OSError as error:
+                context.logger.warning(
+                    "Queue scheduler ignored unreadable shard directory: %s error=%s",
+                    entry.path,
+                    error,
+                )
+                continue
+            with shard_entries:
+                for shard_entry in shard_entries:
+                    if shard_entry.is_file() and shard_entry.name.endswith(".json"):
+                        paths.append(shard_entry.path)
     return paths
 
 

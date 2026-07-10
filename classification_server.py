@@ -23,7 +23,7 @@ from typing import Any
 
 import requests
 import yaml
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_httpauth import HTTPTokenAuth
 from rich.logging import RichHandler
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -723,13 +723,17 @@ def queue_worker_count(config: dict[str, Any]) -> int:
 
 def job_path(job_id: str) -> str:
     """
-    Return path for one cached job file.
+    Return sharded path for one cached job file.
     """
     try:
         parsed_job_id = str(uuid.UUID(job_id))
     except (TypeError, ValueError) as error:
         raise ValueError("invalid job id") from error
-    return os.path.join(queue_cache_path(CONFIG), f"{parsed_job_id}.json")
+    return os.path.join(
+        queue_cache_path(CONFIG),
+        parsed_job_id[0],
+        f"{parsed_job_id}.json",
+    )
 
 
 def now_seconds() -> float:
@@ -758,8 +762,8 @@ def write_job(job: dict[str, Any]) -> None:
     """
     Write async job atomically.
     """
-    os.makedirs(queue_cache_path(CONFIG), exist_ok=True)
     path = job_path(str(job["id"]))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     temporary_path = f"{path}.tmp"
     with JOB_LOCK:
         with open(temporary_path, "w", encoding="utf-8") as handle:
@@ -1290,6 +1294,10 @@ def create_app() -> Flask:
     @app.errorhandler(RequestEntityTooLarge)
     def request_entity_too_large(_error):
         return jsonify({"error": "request body too large"}), 413
+
+    @app.get("/")
+    def index_route():
+        return send_from_directory(os.path.join(THIS_DIR, "static"), "index.html")
 
     @app.get("/health")
     def health_route():

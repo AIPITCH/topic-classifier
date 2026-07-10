@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 820" preserveAspectRatio="xMidYMid slice">
+  <rect width="1400" height="820" fill="#f7f9fb"/>
+  <g opacity="0.18" stroke="#172026" stroke-width="2">
+    <path d="M120 170 360 90 610 210 860 130 1160 250 1280 120"/>
+    <path d="M180 560 380 420 610 520 860 390 1090 530 1260 450"/>
+    <path d="M360 90 380 420M610 210 610 520M860 130 860 390M1160 250 1090 530"/>
+  </g>
+  <g fill="#c7362f" opacity="0.72">
+    <circle cx="120" cy="170" r="8"/>
+    <circle cx="360" cy="90" r="10"/>
+    <circle cx="610" cy="210" r="8"/>
+    <circle cx="860" cy="130" r="10"/>
+    <circle cx="1160" cy="250" r="8"/>
+    <circle cx="1280" cy="120" r="9"/>
+    <circle cx="180" cy="560" r="9"/>
+    <circle cx="380" cy="420" r="8"/>
+    <circle cx="610" cy="520" r="10"/>
+    <circle cx="860" cy="390" r="8"/>
+    <circle cx="1090" cy="530" r="10"/>
+    <circle cx="1260" cy="450" r="8"/>
+  </g>
+</svg>

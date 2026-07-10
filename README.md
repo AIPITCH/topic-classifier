@@ -2,6 +2,11 @@
 
 Standalone Flask API for Ollama-backed Markdown evaluation against the MISP `content-classification` taxonomy.
 
+Web landing/status page:
+
+- local: `http://127.0.0.1:5151/`
+- health: `http://127.0.0.1:5151/health`
+
 ## Install
 
 ```bash
@@ -272,6 +277,7 @@ Local cache behavior:
 - taxonomy cache and queued result cache are local disk files under `.cache/` by default
 - taxonomy cache stores the downloaded MISP taxonomy JSON and is refreshed when older than `taxonomy.cache_ttl_days`
 - queued result cache stores one JSON file per job UUID under `queue.cache_path`
+- queued job files are sharded by the first UUID character, for example `5555abcd-1234-5678-90ab-0123456789ab` is stored as `queue.cache_path/5/5555abcd-1234-5678-90ab-0123456789ab.json`
 - queued job files include request metadata, current status, error text when failed, and result data when done
 - finished and failed queued jobs become unavailable after `queue.cache_ttl_hours`
 - queue scheduler deletes expired job files from disk every `queue.scheduler_interval_seconds`
