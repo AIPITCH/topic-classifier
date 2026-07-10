@@ -6,12 +6,16 @@ Backend API for a channel classifier using Ollama.
 """
 
 import argparse
+import datetime
 import json
 import logging
 import os
 import re
 import sys
+import threading
 import time
+import uuid
+from queue import Queue
 from typing import Any
 
 import requests
@@ -37,6 +41,10 @@ DEFAULT_TAXONOMY_CACHE_PATH = os.path.join(
 SECONDS_PER_DAY = 24 * 60 * 60
 DEFAULT_TAXONOMY_CACHE_TTL_DAYS = 30
 DEFAULT_TAXONOMY_FETCH_TIMEOUT = 30
+DEFAULT_JOB_CACHE_PATH = os.path.join(THIS_DIR, ".cache", "classification_jobs")
+DEFAULT_JOB_CACHE_TTL_HOURS = 24
+DEFAULT_JOB_WORKERS = 1
+DEFAULT_LOG_RETENTION_DAYS = 30
 
 
 def print_meta() -> None:
@@ -54,11 +62,110 @@ console_handler.setLevel(logging.INFO)
 
 log_dir = os.path.join(THIS_DIR, "log")
 os.makedirs(log_dir, exist_ok=True)
-file_handler = logging.FileHandler(os.path.join(log_dir, "cc.log"), mode="a")
-file_handler.setLevel(logging.INFO)
 file_formatter = logging.Formatter(
     "%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]"
 )
+
+
+class DailyLogFileHandler(logging.Handler):
+    """
+    Append logs to one dated file per local day and prune old files.
+    """
+
+    def __init__(
+        self,
+        directory: str,
+        prefix: str,
+        retention_days: int = DEFAULT_LOG_RETENTION_DAYS,
+        rotate_enabled: bool = True,
+    ) -> None:
+        super().__init__()
+        self.directory = directory
+        self.prefix = prefix
+        self.retention_days = retention_days
+        self.rotate_enabled = rotate_enabled
+        self.current_date = ""
+        self.current_path = ""
+        self.stream = None
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """
+        Write one log record to today's file.
+        """
+        try:
+            self._ensure_stream()
+            if self.stream is None:
+                return
+            self.stream.write(f"{self.format(record)}\n")
+            self.flush()
+        except Exception:  # pylint: disable=broad-exception-caught
+            self.handleError(record)
+
+    def flush(self) -> None:
+        """
+        Flush current log file.
+        """
+        if self.stream is not None:
+            self.stream.flush()
+
+    def close(self) -> None:
+        """
+        Close current log file.
+        """
+        if self.stream is not None:
+            self.stream.close()
+            self.stream = None
+        super().close()
+
+    def _ensure_stream(self) -> None:
+        today = datetime.date.today().strftime("%Y-%m-%d")
+        filename = (
+            f"{self.prefix}-{today}.log"
+            if self.rotate_enabled
+            else f"{self.prefix}.log"
+        )
+        path = os.path.join(self.directory, filename)
+        if (
+            today == self.current_date
+            and path == self.current_path
+            and self.stream is not None
+        ):
+            return
+        if self.stream is not None:
+            self.stream.close()
+        os.makedirs(self.directory, exist_ok=True)
+        self.current_date = today
+        self.current_path = path
+        self.stream = open(  # pylint: disable=consider-using-with
+            path,
+            "a",
+            encoding="utf-8",
+        )
+        if self.rotate_enabled:
+            self._prune_old_logs(today)
+
+    def _prune_old_logs(self, today: str) -> None:
+        if self.retention_days <= 0:
+            return
+        cutoff = datetime.datetime.strptime(
+            today, "%Y-%m-%d"
+        ).date() - datetime.timedelta(days=self.retention_days)
+        for filename in os.listdir(self.directory):
+            if not filename.startswith(f"{self.prefix}-") or not filename.endswith(
+                ".log"
+            ):
+                continue
+            date_value = filename[len(self.prefix) + 1 : -4]
+            try:
+                file_date = datetime.datetime.strptime(date_value, "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if file_date < cutoff:
+                os.remove(os.path.join(self.directory, filename))
+
+
+file_handler = DailyLogFileHandler(log_dir, "cc")
+file_handler.setLevel(logging.INFO)
 file_handler.setFormatter(file_formatter)
 
 logger.addHandler(console_handler)
@@ -72,6 +179,9 @@ LOG_LEVELS = {
 MODEL_CACHE: list[dict[str, Any]] = []
 CONFIG: dict[str, Any] = {}
 CONTENT_CLASSIFICATION_TAGS: list[dict[str, str]] = []
+JOB_QUEUE: Queue[str] = Queue()
+JOB_LOCK = threading.Lock()
+JOB_WORKERS_STARTED = False
 USER_MARKDOWN_TOKEN_LIMIT = 10000
 MAX_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -139,6 +249,16 @@ def configure_log_level(config: dict[str, Any]) -> None:
     log_level = LOG_LEVELS[log_level_name]
     console_handler.setLevel(log_level)
     file_handler.setLevel(log_level)
+    logrotate_config = config.get("logrotate") or {}
+    file_handler.rotate_enabled = config_bool(logrotate_config.get("enabled"), True)
+    try:
+        file_handler.retention_days = int(
+            logrotate_config.get("retention_days", DEFAULT_LOG_RETENTION_DAYS)
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("logrotate retention_days must be integer") from error
+    if file_handler.retention_days < 0:
+        raise ValueError("logrotate retention_days must be >= 0")
 
     requests_logger = logging.getLogger("urllib3")
     requests_logger.setLevel(log_level)
@@ -629,6 +749,278 @@ def parse_bool(value: Any) -> bool:
     return str(value or "").lower() in {"1", "true", "yes"}
 
 
+def request_client_ip() -> str:
+    """
+    Return best-effort client IP for logs.
+    """
+    forwarded_for = request.headers.get("X-Forwarded-For", "")
+    if forwarded_for:
+        return forwarded_for.split(",", 1)[0].strip()
+    return request.remote_addr or "unknown"
+
+
+def config_bool(value: Any, default: bool) -> bool:
+    """
+    Parse optional config boolean.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def queue_config(config: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return async queue config.
+    """
+    return config.get("queue") or {}
+
+
+def queue_enabled(config: dict[str, Any]) -> bool:
+    """
+    Return true when async queue requests are allowed.
+    """
+    return config_bool(queue_config(config).get("enabled"), True)
+
+
+def queue_allow_sync(config: dict[str, Any]) -> bool:
+    """
+    Return true when synchronous /evaluate requests are allowed.
+    """
+    return config_bool(queue_config(config).get("allow_sync"), True)
+
+
+def queue_cache_path(config: dict[str, Any]) -> str:
+    """
+    Return async job cache directory.
+    """
+    value = queue_config(config).get("cache_path")
+    if not value:
+        return DEFAULT_JOB_CACHE_PATH
+    return resolve_api_path(str(value))
+
+
+def queue_cache_ttl_seconds(config: dict[str, Any]) -> int:
+    """
+    Return async job cache TTL in seconds.
+    """
+    value = queue_config(config).get("cache_ttl_hours", DEFAULT_JOB_CACHE_TTL_HOURS)
+    try:
+        ttl_hours = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("queue cache_ttl_hours must be integer") from error
+    if ttl_hours <= 0:
+        raise ValueError("queue cache_ttl_hours must be positive")
+    return ttl_hours * 60 * 60
+
+
+def queue_worker_count(config: dict[str, Any]) -> int:
+    """
+    Return async queue worker count.
+    """
+    value = queue_config(config).get("workers", DEFAULT_JOB_WORKERS)
+    try:
+        workers = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("queue workers must be integer") from error
+    if workers <= 0:
+        raise ValueError("queue workers must be positive")
+    return workers
+
+
+def job_path(job_id: str) -> str:
+    """
+    Return path for one cached job file.
+    """
+    try:
+        parsed_job_id = str(uuid.UUID(job_id))
+    except (TypeError, ValueError) as error:
+        raise ValueError("invalid job id") from error
+    return os.path.join(queue_cache_path(CONFIG), f"{parsed_job_id}.json")
+
+
+def now_seconds() -> float:
+    """
+    Return current timestamp seconds.
+    """
+    return time.time()
+
+
+def public_job(job: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return public job status data.
+    """
+    output = {
+        "id": job["id"],
+        "status": job["status"],
+        "created_at": job["created_at"],
+        "updated_at": job["updated_at"],
+    }
+    if job.get("error"):
+        output["error"] = job["error"]
+    return output
+
+
+def write_job(job: dict[str, Any]) -> None:
+    """
+    Write async job atomically.
+    """
+    os.makedirs(queue_cache_path(CONFIG), exist_ok=True)
+    path = job_path(str(job["id"]))
+    temporary_path = f"{path}.tmp"
+    with JOB_LOCK:
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump(job, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(temporary_path, path)
+
+
+def read_job(job_id: str) -> dict[str, Any]:
+    """
+    Read async job from disk.
+    """
+    with open(job_path(job_id), "r", encoding="utf-8") as handle:
+        job = json.load(handle)
+    if not isinstance(job, dict) or job.get("id") != str(uuid.UUID(job_id)):
+        raise ValueError("invalid job data")
+    return job
+
+
+def job_is_expired(job: dict[str, Any]) -> bool:
+    """
+    Return true when job is older than configured TTL.
+    """
+    created_at = float(job.get("created_at", 0))
+    return now_seconds() - created_at > queue_cache_ttl_seconds(CONFIG)
+
+
+def read_current_job(job_id: str) -> dict[str, Any]:
+    """
+    Read job and mark expired jobs.
+    """
+    job = read_job(job_id)
+    if job.get("status") in {"done", "failed"} and job_is_expired(job):
+        job["status"] = "expired"
+        job["updated_at"] = now_seconds()
+        write_job(job)
+    return job
+
+
+def enqueue_evaluation_job(
+    markdown: str,
+    model: str | None,
+    timeout_override: int | None,
+    justify: bool,
+) -> dict[str, Any]:
+    """
+    Create async evaluation job and queue work.
+    """
+    job_id = str(uuid.uuid4())
+    timestamp = now_seconds()
+    job = {
+        "id": job_id,
+        "status": "queued",
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "request": {
+            "markdown": markdown,
+            "model": model,
+            "timeout": timeout_override,
+            "justify": justify,
+        },
+    }
+    write_job(job)
+    JOB_QUEUE.put(job_id)
+    return job
+
+
+def process_evaluation_job(job_id: str) -> None:
+    """
+    Run one queued evaluation job.
+    """
+    try:
+        job = read_job(job_id)
+        if job_is_expired(job):
+            job["status"] = "expired"
+            job["updated_at"] = now_seconds()
+            write_job(job)
+            return
+
+        job["status"] = "running"
+        job["updated_at"] = now_seconds()
+        write_job(job)
+
+        request_data = job.get("request") or {}
+        result = evaluate_markdown(
+            request_data.get("markdown", ""),
+            request_data.get("model"),
+            request_data.get("timeout"),
+            parse_bool(request_data.get("justify")),
+        )
+        job["status"] = "done"
+        job["result"] = result
+        job["updated_at"] = now_seconds()
+        write_job(job)
+    except json.JSONDecodeError as error:
+        store_failed_job(job_id, "ollama evaluation returned invalid json", error)
+    except ValueError as error:
+        store_failed_job(job_id, str(error), error)
+    except requests.RequestException as error:
+        store_failed_job(job_id, "ollama evaluation failed", error)
+
+
+def store_failed_job(job_id: str, public_error: str, error: Exception) -> None:
+    """
+    Store failed async job state.
+    """
+    logger.error("Async evaluation job failed: id=%s error=%s", job_id, error)
+    try:
+        job = read_job(job_id)
+    except (OSError, ValueError, json.JSONDecodeError):
+        timestamp = now_seconds()
+        job = {
+            "id": job_id,
+            "status": "failed",
+            "created_at": timestamp,
+            "updated_at": timestamp,
+        }
+    job["status"] = "failed"
+    job["error"] = public_error
+    job["updated_at"] = now_seconds()
+    write_job(job)
+
+
+def evaluation_worker() -> None:
+    """
+    Background worker for async evaluation jobs.
+    """
+    while True:
+        job_id = JOB_QUEUE.get()
+        try:
+            process_evaluation_job(job_id)
+        finally:
+            JOB_QUEUE.task_done()
+
+
+def start_job_workers() -> None:
+    """
+    Start async queue worker threads once.
+    """
+    global JOB_WORKERS_STARTED
+    if JOB_WORKERS_STARTED or not queue_enabled(CONFIG):
+        return
+    os.makedirs(queue_cache_path(CONFIG), exist_ok=True)
+    for index in range(queue_worker_count(CONFIG)):
+        worker = threading.Thread(
+            target=evaluation_worker,
+            name=f"classification-worker-{index + 1}",
+            daemon=True,
+        )
+        worker.start()
+    JOB_WORKERS_STARTED = True
+
+
 def strip_json_fence(text: str) -> str:
     """
     Remove common markdown JSON fences.
@@ -1003,6 +1395,7 @@ def create_app() -> Flask:
     """
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = configured_max_body_bytes(CONFIG)
+    start_job_workers()
 
     @app.errorhandler(RequestEntityTooLarge)
     def request_entity_too_large(_error):
@@ -1039,6 +1432,9 @@ def create_app() -> Flask:
                 if "justify" in payload
                 else request.args.get("justify")
             )
+            async_requested = (
+                payload["async"] if "async" in payload else request.args.get("async")
+            )
             timeout_value = (
                 payload["timeout"]
                 if "timeout" in payload
@@ -1049,17 +1445,33 @@ def create_app() -> Flask:
             model = request.args.get("model")
             include_raw = request.args.get("include_raw")
             justify = request.args.get("justify")
+            async_requested = request.args.get("async")
             timeout_value = request.args.get("timeout")
 
         include_raw = parse_bool(include_raw)
         justify = parse_bool(justify)
+        async_requested = parse_bool(async_requested)
         if not isinstance(markdown, str) or not markdown.strip():
             return jsonify({"error": "data must be non-empty markdown text"}), 400
         if model is not None and not isinstance(model, str):
             return jsonify({"error": "model must be string"}), 400
+        logger.info(
+            "Evaluation request received: client_ip=%s async=%s justify=%s model=%s",
+            request_client_ip(),
+            async_requested,
+            justify,
+            model or ollama_engine(CONFIG.get("ollama") or {}),
+        )
 
         try:
             timeout_override = parse_timeout(timeout_value)
+            if async_requested:
+                if not queue_enabled(CONFIG):
+                    return jsonify({"error": "async queue is disabled"}), 400
+                job = enqueue_evaluation_job(markdown, model, timeout_override, justify)
+                return jsonify(public_job(job)), 202
+            if not queue_allow_sync(CONFIG):
+                return jsonify({"error": "synchronous evaluation is disabled"}), 400
             result = evaluate_markdown(markdown, model, timeout_override, justify)
         except json.JSONDecodeError as error:
             logger.error("Ollama justified evaluation returned invalid JSON: %s", error)
@@ -1070,6 +1482,41 @@ def create_app() -> Flask:
             logger.error("Ollama evaluation failed: %s", error)
             return jsonify({"error": "ollama evaluation failed"}), 502
 
+        if not include_raw:
+            result.pop("raw_output", None)
+        result.pop("corrected_uids", None)
+        return jsonify(result)
+
+    @app.get("/evaluate/<job_id>/status")
+    def evaluate_status_route(job_id: str):
+        try:
+            job = read_current_job(job_id)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            return jsonify({"error": "job not found"}), 404
+        return jsonify(public_job(job))
+
+    @app.get("/evaluate/<job_id>/result")
+    def evaluate_result_route(job_id: str):
+        include_raw = parse_bool(request.args.get("include_raw"))
+        try:
+            job = read_current_job(job_id)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            return jsonify({"error": "job not found"}), 404
+
+        status = job.get("status")
+        if status in {"queued", "running"}:
+            return jsonify(public_job(job)), 202
+        if status == "expired":
+            return jsonify({"error": "job expired"}), 404
+        if status == "failed":
+            return jsonify({"error": job.get("error") or "job failed"}), 500
+        if status != "done":
+            return jsonify({"error": "invalid job status"}), 500
+
+        result = job.get("result")
+        if not isinstance(result, dict):
+            return jsonify({"error": "invalid job result"}), 500
+        result = dict(result)
         if not include_raw:
             result.pop("raw_output", None)
         result.pop("corrected_uids", None)

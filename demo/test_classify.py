@@ -32,6 +32,7 @@ from classification_server import json_to_markdown
 
 ROOT_DIR = Path(__file__).resolve().parent
 SAMPLE_CHANNEL_PATH = ROOT_DIR / "test_data" / "test_sample_channel.json"
+DEFAULT_REQUEST_TIMEOUT = 120
 
 
 def load_sample_channel(path: Path = SAMPLE_CHANNEL_PATH) -> dict[str, Any]:
@@ -78,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="List available Ollama models through the API and exit.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=DEFAULT_REQUEST_TIMEOUT,
+        help="HTTP/API timeout in seconds.",
+    )
     return parser.parse_args()
 
 
@@ -88,6 +95,7 @@ def main() -> int:
     args = parse_args()
     model = args.model
     client = ClassificationClient.from_config()
+    client.timeout = args.timeout
 
     try:
         if args.list_model:
@@ -98,7 +106,7 @@ def main() -> int:
             return 0
 
         if args.warmup:
-            client.warmup_model(model=model)
+            client.warmup_model(model=model, timeout=args.timeout)
             print("Model warmed.")
 
         sample_channel = load_sample_channel()
@@ -107,6 +115,7 @@ def main() -> int:
         result = client.evaluate_markdown(
             sample_markdown,
             model=model,
+            timeout=args.timeout,
             justify=args.justify,
         )
     except ClassificationError as error:

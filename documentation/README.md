@@ -21,6 +21,9 @@ Default config: `config.yaml`
 
 ```yaml
 log: info
+logrotate:
+  enabled: true
+  retention_days: 30
 flask:
   host: 127.0.0.1
   port: 5151
@@ -30,6 +33,12 @@ taxonomy:
   cache_path: .cache/content-classification.json
   cache_ttl_days: 30
   timeout: 30
+queue:
+  enabled: true
+  allow_sync: true
+  cache_path: .cache/classification_jobs
+  cache_ttl_hours: 24
+  workers: 1
 ollama:
   host: localhost
   port: 11434
@@ -50,6 +59,48 @@ Prompt templates live in `query/*.txt` and are mapped by `query/queries.json`.
 The taxonomy is downloaded from `taxonomy.url` into `taxonomy.cache_path` at
 startup when missing or older than `taxonomy.cache_ttl_days`. Existing stale
 cache is kept if refresh fails.
+Queued results are stored in `queue.cache_path` and expire after
+`queue.cache_ttl_hours`.
+
+## Local Cache
+
+The API uses local disk cache files under `.cache/` by default.
+
+Taxonomy cache:
+
+- file path: `taxonomy.cache_path`
+- default: `.cache/content-classification.json`
+- contents: downloaded MISP `content-classification` taxonomy JSON
+- refresh: at startup when missing or older than `taxonomy.cache_ttl_days`
+- failure mode: stale cache is kept when refresh fails
+- manual reset: delete `.cache/content-classification.json`
+
+Queued result cache:
+
+- directory: `queue.cache_path`
+- default: `.cache/classification_jobs`
+- contents: one JSON file per queued job UUID
+- job file data: request metadata, `queued`/`running`/`done`/`failed`/`expired` status, timestamps, error text, and result data
+- TTL: finished and failed jobs expire after `queue.cache_ttl_hours`
+- manual reset: delete `.cache/classification_jobs/`
+
+Cache files are runtime data and should not be committed.
+
+## Logs
+
+API logs are appended to `log/cc-YYYY-MM-DD.log` when `logrotate.enabled` is
+true. The server automatically opens a new dated log file each local day and
+prunes dated log files older than `logrotate.retention_days`; the default is 30
+days. When `logrotate.enabled` is false, logs are appended to `log/cc.log`.
+
+New `POST /evaluate` requests log:
+
+- client IP, using the first `X-Forwarded-For` value when present
+- `async` flag
+- `justify` flag
+- selected model
+
+Status and result polling routes do not emit this new-query log line.
 
 ## Routes
 
@@ -80,6 +131,7 @@ Query parameters:
 - `timeout`: optional positive integer seconds, max `900`
 - `include_raw`: optional `1`, `true`, or `yes`
 - `justify`: optional `1`, `true`, or `yes`
+- `async`: optional `1`, `true`, or `yes` to queue work and return a job ID
 
 JSON body parameters:
 
@@ -89,6 +141,7 @@ JSON body parameters:
 - `timeout`: optional positive integer seconds, max `900`
 - `include_raw`: optional boolean
 - `justify`: optional boolean
+- `async`: optional boolean
 
 Raw Markdown example:
 
@@ -107,8 +160,32 @@ curl -X POST 'http://127.0.0.1:5151/evaluate' \
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
     "model": "gemma4:31b",
     "justify": true,
-    "include_raw": false
+    "include_raw": false,
+    "async": false
   }'
+```
+
+Queued JSON example:
+
+```bash
+curl -X POST 'http://127.0.0.1:5151/evaluate' \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
+    "justify": true,
+    "async": true
+  }'
+```
+
+Queued response:
+
+```json
+{
+  "id": "63b7e59d-a58b-4d20-a047-cb5a0e9d0f8f",
+  "status": "queued",
+  "created_at": 1783660020.123,
+  "updated_at": 1783660020.123
+}
 ```
 
 Response:
@@ -141,9 +218,50 @@ Errors:
 - `400 {"error": "timeout must be positive"}`
 - `400 {"error": "timeout must be <= 900"}`
 - `400 {"error": "model is not allowed: <model>"}`
+- `400 {"error": "async queue is disabled"}`
+- `400 {"error": "synchronous evaluation is disabled"}`
 - `413 {"error": "request body too large"}`
 - `502 {"error": "ollama evaluation failed"}`
 - `502 {"error": "ollama evaluation returned invalid json"}` when `justify=true` and the second Ollama call does not return parseable JSON
+
+### `GET /evaluate/<job_id>/status`
+
+Return queued job status.
+
+Response:
+
+```json
+{
+  "id": "63b7e59d-a58b-4d20-a047-cb5a0e9d0f8f",
+  "status": "running",
+  "created_at": 1783660020.123,
+  "updated_at": 1783660022.456
+}
+```
+
+Statuses:
+
+- `queued`
+- `running`
+- `done`
+- `failed`
+- `expired`
+
+Errors:
+
+- `404 {"error": "job not found"}`
+
+### `GET /evaluate/<job_id>/result`
+
+Return queued result when complete. Add `include_raw=true` to include raw model output.
+
+Responses:
+
+- `200`: same shape as synchronous `/evaluate`
+- `202`: job still `queued` or `running`
+- `404 {"error": "job not found"}`
+- `404 {"error": "job expired"}`
+- `500 {"error": "<job error>"}`
 
 ### `GET /getmodels`
 
@@ -220,10 +338,14 @@ python3 demo/test_classify.py --model gemma4:31b
 python3 demo/test_classify.py --model gemma4:31b --warmup
 python3 demo/test_classify.py --justify
 python3 demo/test_classify.py --list-model
+python3 demo/test_classify_queue.py --justify
 ```
 
 The example can warm the selected model, loads `demo/test_data/test_sample_channel.json`, converts it to Markdown, then calls `/evaluate`.
 `--list-model` lists available models and exits without calling `/evaluate`.
+The sync example uses a 120 second request timeout by default.
+The queue example submits `async=true`, prints the queued job UID, polls `/evaluate/<id>/status` every 15 seconds by default, then fetches `/evaluate/<id>/result`.
+The queue example uses a 120 second request timeout by default.
 
 Basic client usage:
 

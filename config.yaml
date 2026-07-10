@@ -1,4 +1,7 @@
 log: info
+logrotate:
+  enabled: true
+  retention_days: 30
 flask:
   host: 127.0.0.1
   port: 5151
@@ -8,6 +11,12 @@ taxonomy:
   cache_path: .cache/content-classification.json
   cache_ttl_days: 30
   timeout: 30
+queue:
+  enabled: true
+  allow_sync: true
+  cache_path: .cache/classification_jobs
+  cache_ttl_hours: 24
+  workers: 1
 ollama:
   host: localhost
   port: 11434
