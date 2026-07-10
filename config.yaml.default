@@ -21,6 +21,8 @@ queue:
   allow_sync: true
   cache_path: .cache/classification_jobs
   cache_ttl_hours: 24
+  scheduler_interval_seconds: 30
+  stale_job_ttl_hours: 24
   workers: 1
 ollama:
   host: localhost

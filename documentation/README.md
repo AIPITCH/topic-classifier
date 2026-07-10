@@ -51,6 +51,8 @@ queue:
   allow_sync: true
   cache_path: .cache/classification_jobs
   cache_ttl_hours: 24
+  scheduler_interval_seconds: 30
+  stale_job_ttl_hours: 24
   workers: 1
 ollama:
   host: localhost
@@ -186,6 +188,10 @@ Queued result cache:
 - contents: one JSON file per queued job UUID
 - job file data: request metadata, `queued`/`running`/`done`/`failed`/`expired` status, timestamps, error text, and result data
 - TTL: finished and failed jobs expire after `queue.cache_ttl_hours`
+- cleanup: APScheduler runs every `queue.scheduler_interval_seconds`, default 30 seconds
+- expired `done`, `failed`, and `expired` job files are physically deleted from disk
+- persisted `queued` jobs are requeued after server restart
+- stale `queued` and `running` jobs are marked `failed` after `queue.stale_job_ttl_hours`
 - manual reset: delete `.cache/classification_jobs/`
 
 Cache files are runtime data and should not be committed.

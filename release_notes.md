@@ -8,3 +8,4 @@
 - Add optional Bearer token authentication.
 - Track `config.yaml.default` and ignore local `config.yaml`.
 - Add configurable Flask listen address with wildcard IPv4/IPv6 handling.
+- Add APScheduler queue maintenance for cleanup, restart requeue, and stale job handling.

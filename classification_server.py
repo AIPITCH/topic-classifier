@@ -22,6 +22,7 @@ from typing import Any
 
 import requests
 import yaml
+from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask, jsonify, request
 from flask_httpauth import HTTPTokenAuth
 from rich.logging import RichHandler
@@ -47,6 +48,8 @@ DEFAULT_TAXONOMY_CACHE_TTL_DAYS = 30
 DEFAULT_TAXONOMY_FETCH_TIMEOUT = 30
 DEFAULT_JOB_CACHE_PATH = os.path.join(THIS_DIR, ".cache", "classification_jobs")
 DEFAULT_JOB_CACHE_TTL_HOURS = 24
+DEFAULT_JOB_STALE_TTL_HOURS = 24
+DEFAULT_QUEUE_SCHEDULER_INTERVAL_SECONDS = 30
 DEFAULT_JOB_WORKERS = 1
 DEFAULT_LOG_RETENTION_DAYS = 30
 
@@ -188,6 +191,10 @@ CONTENT_CLASSIFICATION_TAGS: list[dict[str, str]] = []
 JOB_QUEUE: Queue[str] = Queue()
 JOB_LOCK = threading.Lock()
 JOB_WORKERS_STARTED = False
+JOB_SCHEDULER: BackgroundScheduler | None = None
+JOB_SCHEDULER_LOCK = threading.Lock()
+QUEUED_JOB_IDS: set[str] = set()
+RUNNING_JOB_IDS: set[str] = set()
 TOKEN_AUTH = HTTPTokenAuth(scheme="Bearer")
 USER_MARKDOWN_TOKEN_LIMIT = 10000
 MAX_TIMEOUT_SECONDS = 900
@@ -920,6 +927,36 @@ def queue_cache_ttl_seconds(config: dict[str, Any]) -> int:
     return ttl_hours * 60 * 60
 
 
+def queue_stale_job_ttl_seconds(config: dict[str, Any]) -> int:
+    """
+    Return stale queued/running job TTL in seconds.
+    """
+    value = queue_config(config).get("stale_job_ttl_hours", DEFAULT_JOB_STALE_TTL_HOURS)
+    try:
+        ttl_hours = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("queue stale_job_ttl_hours must be integer") from error
+    if ttl_hours <= 0:
+        raise ValueError("queue stale_job_ttl_hours must be positive")
+    return ttl_hours * 60 * 60
+
+
+def queue_scheduler_interval_seconds(config: dict[str, Any]) -> int:
+    """
+    Return queue scheduler interval in seconds.
+    """
+    value = queue_config(config).get(
+        "scheduler_interval_seconds", DEFAULT_QUEUE_SCHEDULER_INTERVAL_SECONDS
+    )
+    try:
+        interval = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("queue scheduler_interval_seconds must be integer") from error
+    if interval <= 0:
+        raise ValueError("queue scheduler_interval_seconds must be positive")
+    return interval
+
+
 def queue_worker_count(config: dict[str, Any]) -> int:
     """
     Return async queue worker count.
@@ -1012,6 +1049,19 @@ def read_current_job(job_id: str) -> dict[str, Any]:
     return job
 
 
+def enqueue_job_id(job_id: str) -> bool:
+    """
+    Put job id in memory queue once.
+    """
+    job_id = str(uuid.UUID(job_id))
+    with JOB_LOCK:
+        if job_id in QUEUED_JOB_IDS or job_id in RUNNING_JOB_IDS:
+            return False
+        QUEUED_JOB_IDS.add(job_id)
+    JOB_QUEUE.put(job_id)
+    return True
+
+
 def enqueue_evaluation_job(
     markdown: str,
     model: str | None,
@@ -1036,7 +1086,7 @@ def enqueue_evaluation_job(
         },
     }
     write_job(job)
-    JOB_QUEUE.put(job_id)
+    enqueue_job_id(job_id)
     return job
 
 
@@ -1044,6 +1094,10 @@ def process_evaluation_job(job_id: str) -> None:
     """
     Run one queued evaluation job.
     """
+    job_id = str(uuid.UUID(job_id))
+    with JOB_LOCK:
+        QUEUED_JOB_IDS.discard(job_id)
+        RUNNING_JOB_IDS.add(job_id)
     try:
         job = read_job(job_id)
         if job_is_expired(job):
@@ -1073,6 +1127,9 @@ def process_evaluation_job(job_id: str) -> None:
         store_failed_job(job_id, str(error), error)
     except requests.RequestException as error:
         store_failed_job(job_id, "ollama evaluation failed", error)
+    finally:
+        with JOB_LOCK:
+            RUNNING_JOB_IDS.discard(job_id)
 
 
 def store_failed_job(job_id: str, public_error: str, error: Exception) -> None:
@@ -1108,6 +1165,151 @@ def evaluation_worker() -> None:
             JOB_QUEUE.task_done()
 
 
+def iter_job_paths() -> list[str]:
+    """
+    Return cached job JSON file paths.
+    """
+    directory = queue_cache_path(CONFIG)
+    try:
+        filenames = os.listdir(directory)
+    except FileNotFoundError:
+        return []
+
+    paths = []
+    for filename in filenames:
+        if not filename.endswith(".json"):
+            continue
+        paths.append(os.path.join(directory, filename))
+    return paths
+
+
+def read_job_path(path: str) -> dict[str, Any] | None:
+    """
+    Read and validate job JSON by path.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            job = json.load(handle)
+        if not isinstance(job, dict) or not job.get("id"):
+            return None
+        uuid.UUID(str(job["id"]))
+        return job
+    except (OSError, ValueError, json.JSONDecodeError):
+        logger.warning("Queue scheduler ignored invalid job file: %s", path)
+        return None
+
+
+def job_age_seconds(job: dict[str, Any]) -> float:
+    """
+    Return job age in seconds.
+    """
+    return now_seconds() - float(job.get("created_at", 0))
+
+
+def queue_scheduler_tick() -> dict[str, int]:
+    """
+    Cleanup stale jobs and requeue persisted queued jobs.
+    """
+    summary = {
+        "deleted": 0,
+        "requeued": 0,
+        "stale_failed": 0,
+        "invalid": 0,
+    }
+    cache_ttl = queue_cache_ttl_seconds(CONFIG)
+    stale_ttl = queue_stale_job_ttl_seconds(CONFIG)
+
+    for path in iter_job_paths():
+        job = read_job_path(path)
+        if job is None:
+            summary["invalid"] += 1
+            continue
+
+        status = str(job.get("status") or "")
+        age = job_age_seconds(job)
+        job_id = str(job["id"])
+
+        if status in {"done", "failed", "expired"} and age > cache_ttl:
+            try:
+                os.remove(path)
+                summary["deleted"] += 1
+                logger.info("Queue scheduler deleted expired job: id=%s", job_id)
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                logger.error(
+                    "Queue scheduler failed to delete job %s: %s", job_id, error
+                )
+            continue
+
+        if status == "queued":
+            if age > stale_ttl:
+                job["status"] = "failed"
+                job["error"] = "queued job expired before dispatch"
+                job["updated_at"] = now_seconds()
+                write_job(job)
+                summary["stale_failed"] += 1
+                logger.info(
+                    "Queue scheduler marked stale queued job failed: id=%s", job_id
+                )
+                continue
+            if enqueue_job_id(job_id):
+                summary["requeued"] += 1
+                logger.info("Queue scheduler requeued persisted job: id=%s", job_id)
+            continue
+
+        if status == "running" and age > stale_ttl:
+            with JOB_LOCK:
+                is_running_here = job_id in RUNNING_JOB_IDS
+            if is_running_here:
+                continue
+            job["status"] = "failed"
+            job["error"] = "running job stale after server restart"
+            job["updated_at"] = now_seconds()
+            write_job(job)
+            summary["stale_failed"] += 1
+            logger.info(
+                "Queue scheduler marked stale running job failed: id=%s", job_id
+            )
+
+    if any(summary.values()):
+        logger.info(
+            "Queue scheduler tick: deleted=%s requeued=%s stale_failed=%s invalid=%s",
+            summary["deleted"],
+            summary["requeued"],
+            summary["stale_failed"],
+            summary["invalid"],
+        )
+    return summary
+
+
+def start_queue_scheduler() -> None:
+    """
+    Start one APScheduler background scheduler for queue maintenance.
+    """
+    global JOB_SCHEDULER  # pylint: disable=global-statement
+    if not queue_enabled(CONFIG):
+        return
+    with JOB_SCHEDULER_LOCK:
+        if JOB_SCHEDULER is not None and JOB_SCHEDULER.running:
+            return
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(
+            func=queue_scheduler_tick,
+            trigger="interval",
+            seconds=queue_scheduler_interval_seconds(CONFIG),
+            max_instances=1,
+            id="queue_scheduler",
+            replace_existing=True,
+        )
+        scheduler.start()
+        JOB_SCHEDULER = scheduler
+    logger.info(
+        "Queue scheduler started: interval_seconds=%s",
+        queue_scheduler_interval_seconds(CONFIG),
+    )
+
+
 def start_job_workers() -> None:
     """
     Start async queue worker threads once.
@@ -1116,6 +1318,7 @@ def start_job_workers() -> None:
     if JOB_WORKERS_STARTED or not queue_enabled(CONFIG):
         return
     os.makedirs(queue_cache_path(CONFIG), exist_ok=True)
+    start_queue_scheduler()
     for index in range(queue_worker_count(CONFIG)):
         worker = threading.Thread(
             target=evaluation_worker,

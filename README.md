@@ -44,6 +44,8 @@ queue:
   allow_sync: true
   cache_path: .cache/classification_jobs
   cache_ttl_hours: 24
+  scheduler_interval_seconds: 30
+  stale_job_ttl_hours: 24
   workers: 1
 ollama:
   host: localhost
@@ -256,6 +258,11 @@ Queue cache:
 - synchronous requests can be disabled with `queue.allow_sync: false`
 - queued results are stored in `queue.cache_path`
 - queued results expire after `queue.cache_ttl_hours`
+- queue maintenance runs with one APScheduler `BackgroundScheduler`
+- `queue.scheduler_interval_seconds` controls scheduler frequency, default 30
+- scheduler physically deletes expired `done`, `failed`, and `expired` job files
+- scheduler requeues persisted `queued` jobs after server restart
+- scheduler marks stale `queued` and `running` jobs failed after `queue.stale_job_ttl_hours`
 
 Local cache behavior:
 
@@ -264,6 +271,7 @@ Local cache behavior:
 - queued result cache stores one JSON file per job UUID under `queue.cache_path`
 - queued job files include request metadata, current status, error text when failed, and result data when done
 - finished and failed queued jobs become unavailable after `queue.cache_ttl_hours`
+- queue scheduler deletes expired job files from disk every `queue.scheduler_interval_seconds`
 - deleting `.cache/content-classification.json` forces taxonomy download on next startup
 - deleting `.cache/classification_jobs/` removes queued job history and results
 - cache files are runtime data and should not be committed
