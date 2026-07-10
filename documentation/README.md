@@ -192,10 +192,10 @@ Queued result cache:
 - layout example: `queue.cache_path/5/5555abcd-1234-5678-90ab-0123456789ab.json`
 - job file data: request metadata, `queued`/`running`/`done`/`failed`/`expired` status, timestamps, error text, and result data
 - TTL: finished and failed jobs expire after `queue.cache_ttl_hours`
-- cleanup: APScheduler runs every `queue.scheduler_interval_seconds`, default 30 seconds
+- cleanup: APScheduler runs once immediately at startup, then every `queue.scheduler_interval_seconds`, default 30 seconds
 - expired `done`, `failed`, and `expired` job files are physically deleted from disk
-- persisted `queued` jobs are requeued after server restart
-- stale `queued` and `running` jobs are marked `failed` after `queue.stale_job_ttl_hours`
+- persisted `queued` jobs and interrupted `running` jobs are requeued after server restart
+- stale `queued` and interrupted `running` jobs are marked `failed` after `queue.stale_job_ttl_hours`
 - manual reset: delete `.cache/classification_jobs/`
 
 Cache files are runtime data and should not be committed.

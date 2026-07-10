@@ -274,8 +274,9 @@ Queue cache:
 - queue maintenance runs with one APScheduler `BackgroundScheduler`
 - `queue.scheduler_interval_seconds` controls scheduler frequency, default 30
 - scheduler physically deletes expired `done`, `failed`, and `expired` job files
-- scheduler requeues persisted `queued` jobs after server restart
-- scheduler marks stale `queued` and `running` jobs failed after `queue.stale_job_ttl_hours`
+- scheduler runs once immediately at startup, then every `queue.scheduler_interval_seconds`
+- scheduler requeues persisted `queued` jobs and interrupted `running` jobs after server restart
+- scheduler marks stale `queued` and interrupted `running` jobs failed after `queue.stale_job_ttl_hours`
 
 Local cache behavior:
 

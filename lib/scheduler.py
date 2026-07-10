@@ -192,10 +192,21 @@ def queue_scheduler_tick(context: QueueSchedulerContext) -> dict[str, int]:
                 )
             continue
 
-        if status == "running" and age > stale_ttl:
+        if status == "running":
             with context.job_lock:
                 is_running_here = job_id in context.running_job_ids
             if is_running_here:
+                continue
+            if age <= stale_ttl:
+                job["status"] = "queued"
+                job["updated_at"] = context.now_seconds()
+                context.write_job(job)
+                if context.enqueue_job_id(job_id):
+                    summary["requeued"] += 1
+                    context.logger.info(
+                        "Queue scheduler requeued interrupted running job: id=%s",
+                        job_id,
+                    )
                 continue
             job["status"] = "failed"
             job["error"] = "running job stale after server restart"
@@ -251,6 +262,7 @@ def start_queue_scheduler(
         seconds=interval_seconds,
         max_instances=1,
         id="queue_scheduler",
+        next_run_time=datetime.datetime.now(),
         replace_existing=True,
     )
     logger.info("Queue scheduler started: interval_seconds=%s", interval_seconds)
