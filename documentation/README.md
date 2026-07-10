@@ -54,6 +54,10 @@ queue:
   scheduler_interval_seconds: 30
   stale_job_ttl_hours: 24
   workers: 1
+health:
+  enabled: true
+  scheduler_interval_seconds: 30
+  timeout_seconds: 5
 ollama:
   host: localhost
   port: 11434
@@ -212,9 +216,49 @@ New `POST /evaluate` requests log:
 
 Status and result polling routes do not emit this new-query log line.
 
+## Health
+
+`GET /health` is intended for probes and load balancers. It does not require authentication.
+
+The route never calls Ollama directly. APScheduler probes Ollama in the background every `health.scheduler_interval_seconds`, default 30 seconds, using `health.timeout_seconds`, default 5 seconds. `/health` returns the cached probe state immediately.
+
+The background probe can be disabled with `health.enabled: false`; in that case `/health` keeps returning the cached state.
+
+Healthy response returns HTTP 200:
+
+```json
+{
+  "status": "ok",
+  "ollama": "ok",
+  "checked_at": 1783660020.123
+}
+```
+
+Unhealthy response returns HTTP 500:
+
+```json
+{
+  "status": "error",
+  "ollama": "error",
+  "error": "ollama timeout",
+  "checked_at": 1783660020.123
+}
+```
+
+Before the first successful background probe, `/health` returns 500.
+
 ## Routes
 
 Base URL default: `http://127.0.0.1:5151`
+
+### `GET /health`
+
+Return cached health state. This route is unauthenticated and does not perform network checks in request path.
+
+Responses:
+
+- `200`: last scheduled Ollama probe succeeded
+- `500`: last scheduled Ollama probe failed or no successful probe has run yet
 
 ### `POST /evaluate`
 

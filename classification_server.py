@@ -52,6 +52,8 @@ DEFAULT_JOB_STALE_TTL_HOURS = 24
 DEFAULT_QUEUE_SCHEDULER_INTERVAL_SECONDS = 30
 DEFAULT_JOB_WORKERS = 1
 DEFAULT_LOG_RETENTION_DAYS = 30
+DEFAULT_HEALTH_SCHEDULER_INTERVAL_SECONDS = 30
+DEFAULT_HEALTH_TIMEOUT_SECONDS = 5
 
 
 def print_meta() -> None:
@@ -195,6 +197,14 @@ JOB_SCHEDULER: BackgroundScheduler | None = None
 JOB_SCHEDULER_LOCK = threading.Lock()
 QUEUED_JOB_IDS: set[str] = set()
 RUNNING_JOB_IDS: set[str] = set()
+HEALTH_LOCK = threading.Lock()
+HEALTH_STATE: dict[str, Any] = {
+    "status": "error",
+    "ollama": "unknown",
+    "error": "health probe has not run yet",
+    "checked_at": None,
+}
+LAST_HEALTH_LOG_STATE = ""
 TOKEN_AUTH = HTTPTokenAuth(scheme="Bearer")
 USER_MARKDOWN_TOKEN_LIMIT = 10000
 MAX_TIMEOUT_SECONDS = 900
@@ -971,6 +981,50 @@ def queue_worker_count(config: dict[str, Any]) -> int:
     return workers
 
 
+def health_config(config: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return health probe config.
+    """
+    return config.get("health") or {}
+
+
+def health_enabled(config: dict[str, Any]) -> bool:
+    """
+    Return true when health background probe is enabled.
+    """
+    return config_bool(health_config(config).get("enabled"), True)
+
+
+def health_scheduler_interval_seconds(config: dict[str, Any]) -> int:
+    """
+    Return health probe scheduler interval.
+    """
+    value = health_config(config).get(
+        "scheduler_interval_seconds", DEFAULT_HEALTH_SCHEDULER_INTERVAL_SECONDS
+    )
+    try:
+        interval = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("health scheduler_interval_seconds must be integer") from error
+    if interval <= 0:
+        raise ValueError("health scheduler_interval_seconds must be positive")
+    return interval
+
+
+def health_timeout_seconds(config: dict[str, Any]) -> int:
+    """
+    Return health probe timeout.
+    """
+    value = health_config(config).get("timeout_seconds", DEFAULT_HEALTH_TIMEOUT_SECONDS)
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError) as error:
+        raise ValueError("health timeout_seconds must be integer") from error
+    if timeout <= 0:
+        raise ValueError("health timeout_seconds must be positive")
+    return timeout
+
+
 def job_path(job_id: str) -> str:
     """
     Return path for one cached job file.
@@ -1283,30 +1337,122 @@ def queue_scheduler_tick() -> dict[str, int]:
     return summary
 
 
+def health_state() -> dict[str, Any]:
+    """
+    Return copy of current health state.
+    """
+    with HEALTH_LOCK:
+        return dict(HEALTH_STATE)
+
+
+def set_health_state(status: str, ollama: str, error: str | None = None) -> None:
+    """
+    Store and log health state changes.
+    """
+    global LAST_HEALTH_LOG_STATE  # pylint: disable=global-statement
+    state = {
+        "status": status,
+        "ollama": ollama,
+        "checked_at": now_seconds(),
+    }
+    if error:
+        state["error"] = error
+
+    log_key = json.dumps(
+        {"status": status, "ollama": ollama, "error": error or ""},
+        sort_keys=True,
+    )
+    with HEALTH_LOCK:
+        HEALTH_STATE.clear()
+        HEALTH_STATE.update(state)
+        should_log = log_key != LAST_HEALTH_LOG_STATE
+        if should_log:
+            LAST_HEALTH_LOG_STATE = log_key
+
+    if should_log:
+        if status == "ok":
+            logger.info("Health probe recovered: ollama=ok")
+        else:
+            logger.warning("Health probe failed: ollama=%s error=%s", ollama, error)
+
+
+def health_probe_tick() -> dict[str, Any]:
+    """
+    Probe Ollama and cache health state.
+    """
+    ollama_config = CONFIG.get("ollama") or {}
+    api_base = ollama_api_base(ollama_config)
+    timeout = health_timeout_seconds(CONFIG)
+    try:
+        session = requests.Session()
+        data = ollama_request(session, "GET", f"{api_base}/api/tags", timeout)
+        if not isinstance(data, dict):
+            raise ValueError("invalid ollama health response")
+    except (ValueError, requests.RequestException) as error:
+        set_health_state("error", "error", str(error))
+        return health_state()
+
+    set_health_state("ok", "ok")
+    return health_state()
+
+
+def ensure_app_scheduler() -> BackgroundScheduler:
+    """
+    Return single process-wide APScheduler instance.
+    """
+    global JOB_SCHEDULER  # pylint: disable=global-statement
+    with JOB_SCHEDULER_LOCK:
+        if JOB_SCHEDULER is not None and JOB_SCHEDULER.running:
+            return JOB_SCHEDULER
+        scheduler = BackgroundScheduler()
+        scheduler.start()
+        JOB_SCHEDULER = scheduler
+        return scheduler
+
+
 def start_queue_scheduler() -> None:
     """
     Start one APScheduler background scheduler for queue maintenance.
     """
-    global JOB_SCHEDULER  # pylint: disable=global-statement
     if not queue_enabled(CONFIG):
         return
-    with JOB_SCHEDULER_LOCK:
-        if JOB_SCHEDULER is not None and JOB_SCHEDULER.running:
-            return
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(
-            func=queue_scheduler_tick,
-            trigger="interval",
-            seconds=queue_scheduler_interval_seconds(CONFIG),
-            max_instances=1,
-            id="queue_scheduler",
-            replace_existing=True,
-        )
-        scheduler.start()
-        JOB_SCHEDULER = scheduler
+    scheduler = ensure_app_scheduler()
+    if scheduler.get_job("queue_scheduler") is not None:
+        return
+    scheduler.add_job(
+        func=queue_scheduler_tick,
+        trigger="interval",
+        seconds=queue_scheduler_interval_seconds(CONFIG),
+        max_instances=1,
+        id="queue_scheduler",
+        replace_existing=True,
+    )
     logger.info(
         "Queue scheduler started: interval_seconds=%s",
         queue_scheduler_interval_seconds(CONFIG),
+    )
+
+
+def start_health_scheduler() -> None:
+    """
+    Start APScheduler job for cached health probing.
+    """
+    if not health_enabled(CONFIG):
+        return
+    scheduler = ensure_app_scheduler()
+    if scheduler.get_job("health_probe") is not None:
+        return
+    scheduler.add_job(
+        func=health_probe_tick,
+        trigger="interval",
+        seconds=health_scheduler_interval_seconds(CONFIG),
+        max_instances=1,
+        id="health_probe",
+        replace_existing=True,
+    )
+    logger.info(
+        "Health scheduler started: interval_seconds=%s",
+        health_scheduler_interval_seconds(CONFIG),
     )
 
 
@@ -1704,11 +1850,18 @@ def create_app() -> Flask:
     validate_auth_config(CONFIG)
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = configured_max_body_bytes(CONFIG)
+    start_health_scheduler()
     start_job_workers()
 
     @app.errorhandler(RequestEntityTooLarge)
     def request_entity_too_large(_error):
         return jsonify({"error": "request body too large"}), 413
+
+    @app.get("/health")
+    def health_route():
+        state = health_state()
+        status_code = 200 if state.get("status") == "ok" else 500
+        return jsonify(state), status_code
 
     @app.get("/getmodels")
     @require_auth

@@ -24,6 +24,10 @@ queue:
   scheduler_interval_seconds: 30
   stale_job_ttl_hours: 24
   workers: 1
+health:
+  enabled: true
+  scheduler_interval_seconds: 30
+  timeout_seconds: 5
 ollama:
   host: localhost
   port: 11434

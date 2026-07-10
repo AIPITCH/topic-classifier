@@ -47,6 +47,10 @@ queue:
   scheduler_interval_seconds: 30
   stale_job_ttl_hours: 24
   workers: 1
+health:
+  enabled: true
+  scheduler_interval_seconds: 30
+  timeout_seconds: 5
 ollama:
   host: localhost
   port: 11434
@@ -284,11 +288,48 @@ Logs:
 - old dated log files are pruned automatically after `logrotate.retention_days` days, default 30
 - each new `/evaluate` request logs client IP, async flag, justify flag, and model
 
+Health:
+
+- `GET /health` does not require authentication
+- scheduler can be disabled with `health.enabled: false`
+- `/health` never calls Ollama directly; it returns cached scheduler probe state
+- APScheduler probes Ollama every `health.scheduler_interval_seconds`, default 30
+- the probe uses `health.timeout_seconds`, default 5
+- response is `200` when last probe succeeded
+- response is `500` when last probe failed or no successful probe has run yet
+
 ## Models
 
 ```bash
 curl -H 'Authorization: Bearer paste-generated-token-here' \
   'http://127.0.0.1:5151/getmodels'
+```
+
+## Health
+
+```bash
+curl 'http://127.0.0.1:5151/health'
+```
+
+Healthy response:
+
+```json
+{
+  "status": "ok",
+  "ollama": "ok",
+  "checked_at": 1783660020.123
+}
+```
+
+Unhealthy response:
+
+```json
+{
+  "status": "error",
+  "ollama": "error",
+  "error": "ollama timeout",
+  "checked_at": 1783660020.123
+}
 ```
 
 ## Demo
