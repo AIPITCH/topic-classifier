@@ -6,7 +6,9 @@ auth:
   enabled: false
   tokens: []
 flask:
-  host: 127.0.0.1
+  listen: 127.0.0.1
+  listen_family: ipv4
+  client_host: 127.0.0.1
   port: 5151
   max_body_bytes: 2097152
 taxonomy:

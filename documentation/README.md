@@ -36,7 +36,9 @@ auth:
   enabled: false
   tokens: []
 flask:
-  host: 127.0.0.1
+  listen: 127.0.0.1
+  listen_family: ipv4
+  client_host: 127.0.0.1
   port: 5151
   max_body_bytes: 2097152
 taxonomy:
@@ -67,6 +69,14 @@ CCE_CONFIG=/path/to/config.yaml python3 classification_server.py
 ```
 
 If local `config.yaml` is missing, the server and Python client fall back to `config.yaml.default`.
+
+Listen config:
+
+- `flask.listen`: IP address to bind. Use `127.0.0.1`, `0.0.0.0`, `::1`, `::`, or `*`.
+- `flask.listen_family`: used only when `flask.listen: "*"`; accepted values are `ipv4`, `ipv6`, or `dual`.
+- `flask.listen: "*"` with `listen_family: ipv4` binds `0.0.0.0`.
+- `flask.listen: "*"` with `listen_family: ipv6` or `dual` binds `::`.
+- `flask.client_host`: host used by the Python client helpers when building the API URL.
 
 Prompt templates live in `query/*.txt` and are mapped by `query/queries.json`.
 The taxonomy is downloaded from `taxonomy.url` into `taxonomy.cache_path` at

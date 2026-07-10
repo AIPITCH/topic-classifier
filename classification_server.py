@@ -242,6 +242,33 @@ def ollama_engine(ollama_config: dict[str, Any]) -> str:
     return str(ollama_config.get("engine") or ollama_config.get("model") or "")
 
 
+def configured_listen_host(flask_config: dict[str, Any]) -> str:
+    """
+    Return Flask listen host, supporting wildcard syntax.
+    """
+    raw_host = str(
+        flask_config.get("listen") or flask_config.get("host") or "127.0.0.1"
+    ).strip()
+    if raw_host not in {"*", "all"}:
+        return raw_host
+
+    family = str(flask_config.get("listen_family") or "ipv4").strip().lower()
+    if family in {"ipv4", "4"}:
+        return "0.0.0.0"
+    if family in {"ipv6", "6", "dual", "both"}:
+        return "::"
+    raise ValueError("flask listen_family must be ipv4, ipv6, or dual")
+
+
+def configured_listen_url_host(host: str) -> str:
+    """
+    Return display-safe host for startup URL.
+    """
+    if ":" in host and not host.startswith("["):
+        return f"[{host}]"
+    return host
+
+
 def configure_log_level(config: dict[str, Any]) -> None:
     """
     Configure printout and file log level from config.
@@ -1658,9 +1685,9 @@ def main() -> int:
         return 1
 
     flask_config = CONFIG.get("flask") or {}
-    host = str(flask_config.get("host") or "127.0.0.1")
+    host = configured_listen_host(flask_config)
     port = int(flask_config.get("port") or 5151)
-    logger.info("Starting API: http://%s:%s", host, port)
+    logger.info("Starting API: http://%s:%s", configured_listen_url_host(host), port)
     try:
         app = create_app()
     except ValueError as error:

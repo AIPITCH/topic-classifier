@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # coding=utf-8
+# pylint: disable=duplicate-code
 
 """
 Client library for the local evaluation API.
@@ -49,7 +50,9 @@ def classifier_api_base(config: dict[str, Any] | None = None) -> str:
     Return API base URL from config.
     """
     flask_config = (config or {}).get("flask") or {}
-    host = str(flask_config.get("host") or "127.0.0.1")
+    host = str(
+        flask_config.get("client_host") or flask_config.get("host") or "127.0.0.1"
+    )
     port = int(flask_config.get("port") or 5151)
     return f"http://{host}:{port}"
 

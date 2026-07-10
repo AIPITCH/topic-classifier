@@ -29,7 +29,9 @@ auth:
   enabled: false
   tokens: []
 flask:
-  host: 127.0.0.1
+  listen: 127.0.0.1
+  listen_family: ipv4
+  client_host: 127.0.0.1
   port: 5151
   max_body_bytes: 2097152
 taxonomy:
@@ -61,6 +63,14 @@ Security limits:
 - queued result cache: `queue.cache_ttl_hours` hours
 - request timeout override max: `900` seconds
 - model override must be in `ollama.allowlist` when allowlist is set
+
+Listen config:
+
+- `flask.listen`: IP address to bind. Use `127.0.0.1`, `0.0.0.0`, `::1`, `::`, or `*`.
+- `flask.listen_family`: used only when `flask.listen: "*"`; accepted values are `ipv4`, `ipv6`, or `dual`.
+- `flask.listen: "*"` with `listen_family: ipv4` binds `0.0.0.0`.
+- `flask.listen: "*"` with `listen_family: ipv6` or `dual` binds `::`.
+- `flask.client_host`: host used by the Python client helpers when building the API URL.
 
 ## Authentication
 
