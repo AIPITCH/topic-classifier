@@ -233,6 +233,7 @@ def generate(  # pylint: disable=too-many-arguments,too-many-positional-argument
     model: str | None = None,
     timeout_override: int | None = None,
     validate_model: bool = True,
+    context: list[int] | None = None,
 ) -> dict[str, Any]:
     """
     Call Ollama generate with configured defaults.
@@ -247,20 +248,24 @@ def generate(  # pylint: disable=too-many-arguments,too-many-positional-argument
     if validate_model:
         ensure_model_allowed(model_name, config)
 
+    payload: dict[str, Any] = {
+        "model": model_name,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature": temperature,
+        },
+    }
+    if context:
+        payload["context"] = context
+
     return request(
         session,
         "POST",
         f"{base_url}/api/generate",
         timeout,
         logger,
-        json={
-            "model": model_name,
-            "prompt": prompt,
-            "stream": False,
-            "options": {
-                "temperature": temperature,
-            },
-        },
+        json=payload,
     )
 
 
@@ -347,6 +352,7 @@ class OllamaClient:
         model: str | None = None,
         timeout_override: int | None = None,
         validate_model: bool = True,
+        context: list[int] | None = None,
     ) -> dict[str, Any]:
         """
         Call Ollama generate.
@@ -365,4 +371,5 @@ class OllamaClient:
             model=model_name,
             timeout_override=timeout_override,
             validate_model=validate_model,
+            context=context,
         )

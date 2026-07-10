@@ -99,6 +99,7 @@ def submit_job(args: argparse.Namespace, markdown: str) -> str:
         "data": markdown,
         "async": True,
         "justify": args.justify,
+        "resume": args.resume,
     }
     if args.model:
         payload["model"] = args.model
@@ -189,6 +190,11 @@ def parse_args() -> argparse.Namespace:
         "--justify",
         action="store_true",
         help="Ask for justified taxonomy matches.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Ask for a summary in the final result.",
     )
     parser.add_argument(
         "--include-raw",

@@ -184,6 +184,7 @@ curl -X POST 'http://127.0.0.1:5151/evaluate' \
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
     "model": "gemma4:31b",
     "justify": true,
+    "resume": true,
     "async": false
   }'
 ```
@@ -197,6 +198,7 @@ curl -X POST 'http://127.0.0.1:5151/evaluate' \
   -d '{
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
     "justify": true,
+    "resume": true,
     "async": true
   }'
 ```
@@ -240,6 +242,8 @@ Response shape:
     }
   ],
   "justify": true,
+  "resume": true,
+  "resum": "The channel dump advertises leaked databases and credential dumps.",
   "processing_time_seconds": 12.345,
   "truncated": false,
   "input_tokens": 42,
@@ -252,6 +256,8 @@ Response shape:
 
 1. evaluate Markdown into taxonomy UIDs
 2. challenge selected UIDs and keep only justified labels
+
+`resume=true` adds one Ollama call and includes `resum` in the final JSON. When `justify=true`, the summary call continues from the justification context. Otherwise, it continues from the taxonomy tagging context.
 
 Taxonomy cache:
 
@@ -291,7 +297,7 @@ Logs:
 - the server opens a new dated file automatically each local day
 - log rotation can be disabled with `logrotate.enabled: false`; disabled mode appends to `log/cc.log`
 - old dated log files are pruned automatically after `logrotate.retention_days` days, default 30
-- each new `/evaluate` request logs client IP, async flag, justify flag, and model
+- each new `/evaluate` request logs client IP, async flag, justify flag, resume flag, and model
 
 Health:
 
@@ -344,9 +350,11 @@ python3 demo/test_classify.py
 python3 demo/test_classify.py --model gemma4:31b
 python3 demo/test_classify.py --model gemma4:31b --warmup
 python3 demo/test_classify.py --model gemma4:31b --justify
+python3 demo/test_classify.py --resume
 python3 demo/test_classify.py --list-model
 python3 demo/test_classify.py --token paste-generated-token-here
 python3 demo/test_classify_queue.py --justify
+python3 demo/test_classify_queue.py --resume
 python3 demo/test_classify_queue.py --token paste-generated-token-here
 ```
 
