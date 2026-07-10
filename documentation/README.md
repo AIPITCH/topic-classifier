@@ -78,6 +78,50 @@ Listen config:
 - `flask.listen: "*"` with `listen_family: ipv6` or `dual` binds `::`.
 - `flask.client_host`: host used by the Python client helpers when building the API URL.
 
+Examples:
+
+Local-only IPv4:
+
+```yaml
+flask:
+  listen: 127.0.0.1
+  listen_family: ipv4
+  client_host: 127.0.0.1
+  port: 5151
+```
+
+All IPv4 interfaces:
+
+```yaml
+flask:
+  listen: "*"
+  listen_family: ipv4
+  client_host: 127.0.0.1
+  port: 5151
+```
+
+All IPv6 interfaces:
+
+```yaml
+flask:
+  listen: "*"
+  listen_family: ipv6
+  client_host: ::1
+  port: 5151
+```
+
+Dual-stack:
+
+```yaml
+flask:
+  listen: "*"
+  listen_family: dual
+  client_host: 127.0.0.1
+  port: 5151
+```
+
+`dual` binds `::`; IPv4 access then depends on OS IPv4-mapped IPv6 socket behavior.
+
 Prompt templates live in `query/*.txt` and are mapped by `query/queries.json`.
 The taxonomy is downloaded from `taxonomy.url` into `taxonomy.cache_path` at
 startup when missing or older than `taxonomy.cache_ttl_days`. Existing stale

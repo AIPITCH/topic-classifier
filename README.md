@@ -72,6 +72,38 @@ Listen config:
 - `flask.listen: "*"` with `listen_family: ipv6` or `dual` binds `::`.
 - `flask.client_host`: host used by the Python client helpers when building the API URL.
 
+Local-only IPv4:
+
+```yaml
+flask:
+  listen: 127.0.0.1
+  listen_family: ipv4
+  client_host: 127.0.0.1
+  port: 5151
+```
+
+Listen on all IPv4 interfaces:
+
+```yaml
+flask:
+  listen: "*"
+  listen_family: ipv4
+  client_host: 127.0.0.1
+  port: 5151
+```
+
+Listen on all IPv6 interfaces:
+
+```yaml
+flask:
+  listen: "*"
+  listen_family: ipv6
+  client_host: ::1
+  port: 5151
+```
+
+Use `listen_family: dual` only when the OS accepts IPv4-mapped traffic on an IPv6 wildcard socket.
+
 ## Authentication
 
 Bearer token authentication is optional and disabled by default.
