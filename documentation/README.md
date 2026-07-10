@@ -24,6 +24,9 @@ log: info
 logrotate:
   enabled: true
   retention_days: 30
+auth:
+  enabled: false
+  tokens: []
 flask:
   host: 127.0.0.1
   port: 5151
@@ -61,6 +64,43 @@ startup when missing or older than `taxonomy.cache_ttl_days`. Existing stale
 cache is kept if refresh fails.
 Queued results are stored in `queue.cache_path` and expire after
 `queue.cache_ttl_hours`.
+
+## Authentication
+
+Bearer token authentication uses `Flask-HTTPAuth` and is disabled by default.
+
+Generate a token:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+Enable auth in `config.yaml`:
+
+```yaml
+auth:
+  enabled: true
+  tokens:
+    - paste-generated-token-here
+```
+
+Use the token with API requests:
+
+```bash
+curl -H 'Authorization: Bearer paste-generated-token-here' \
+  'http://127.0.0.1:5151/getmodels'
+```
+
+Protected routes:
+
+- `GET /getmodels`
+- `POST /evaluate`
+- `GET /evaluate/<job_id>/status`
+- `GET /evaluate/<job_id>/result`
+- `POST /warmup_model`
+
+If `auth.enabled` is `true` and `tokens` is empty, all protected API requests are denied. Set `auth.enabled: false` or remove the `auth` block to run without auth.
+Do not commit real tokens to git; keep local config or deployment secrets private.
 
 ## Local Cache
 
@@ -147,6 +187,7 @@ Raw Markdown example:
 
 ```bash
 curl -X POST 'http://127.0.0.1:5151/evaluate?justify=true' \
+  -H 'Authorization: Bearer paste-generated-token-here' \
   -H 'Content-Type: text/markdown' \
   --data-binary @sample.md
 ```
@@ -155,6 +196,7 @@ JSON example:
 
 ```bash
 curl -X POST 'http://127.0.0.1:5151/evaluate' \
+  -H 'Authorization: Bearer paste-generated-token-here' \
   -H 'Content-Type: application/json' \
   -d '{
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
@@ -169,6 +211,7 @@ Queued JSON example:
 
 ```bash
 curl -X POST 'http://127.0.0.1:5151/evaluate' \
+  -H 'Authorization: Bearer paste-generated-token-here' \
   -H 'Content-Type: application/json' \
   -d '{
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
@@ -220,6 +263,7 @@ Errors:
 - `400 {"error": "model is not allowed: <model>"}`
 - `400 {"error": "async queue is disabled"}`
 - `400 {"error": "synchronous evaluation is disabled"}`
+- `401 {"error": "authentication required"}`
 - `413 {"error": "request body too large"}`
 - `502 {"error": "ollama evaluation failed"}`
 - `502 {"error": "ollama evaluation returned invalid json"}` when `justify=true` and the second Ollama call does not return parseable JSON
@@ -250,6 +294,7 @@ Statuses:
 Errors:
 
 - `404 {"error": "job not found"}`
+- `401 {"error": "authentication required"}`
 
 ### `GET /evaluate/<job_id>/result`
 
@@ -259,6 +304,7 @@ Responses:
 
 - `200`: same shape as synchronous `/evaluate`
 - `202`: job still `queued` or `running`
+- `401 {"error": "authentication required"}`
 - `404 {"error": "job not found"}`
 - `404 {"error": "job expired"}`
 - `500 {"error": "<job error>"}`
@@ -274,7 +320,8 @@ Query parameters:
 Example:
 
 ```bash
-curl 'http://127.0.0.1:5151/getmodels'
+curl -H 'Authorization: Bearer paste-generated-token-here' \
+  'http://127.0.0.1:5151/getmodels'
 ```
 
 Response:
@@ -290,6 +337,7 @@ Response:
 
 Errors:
 
+- `401 {"error": "authentication required"}`
 - `502 {"error": "ollama model listing failed"}` if Ollama request fails
 
 ### `POST /warmup_model`
@@ -310,6 +358,7 @@ Example:
 
 ```bash
 curl -X POST 'http://127.0.0.1:5151/warmup_model' \
+  -H 'Authorization: Bearer paste-generated-token-here' \
   -H 'Content-Type: application/json' \
   -d '{"model": "gemma4:31b"}'
 ```
@@ -326,6 +375,7 @@ Errors:
 - `400 {"error": "model must be string"}`
 - `400 {"error": "model is not allowed: <model>"}`
 - `400 {"error": "timeout must be <= 900"}`
+- `401 {"error": "authentication required"}`
 - `502 {"error": "ollama warmup failed"}`
 
 ## Python Client
@@ -338,12 +388,15 @@ python3 demo/test_classify.py --model gemma4:31b
 python3 demo/test_classify.py --model gemma4:31b --warmup
 python3 demo/test_classify.py --justify
 python3 demo/test_classify.py --list-model
+python3 demo/test_classify.py --token paste-generated-token-here
 python3 demo/test_classify_queue.py --justify
+python3 demo/test_classify_queue.py --token paste-generated-token-here
 ```
 
 The example can warm the selected model, loads `demo/test_data/test_sample_channel.json`, converts it to Markdown, then calls `/evaluate`.
 `--list-model` lists available models and exits without calling `/evaluate`.
 The sync example uses a 120 second request timeout by default.
+Both examples also read `CCE_API_TOKEN` when auth is enabled.
 The queue example submits `async=true`, prints the queued job UID, polls `/evaluate/<id>/status` every 15 seconds by default, then fetches `/evaluate/<id>/result`.
 The queue example uses a 120 second request timeout by default.
 
@@ -353,6 +406,7 @@ Basic client usage:
 from client.classifier import ClassificationClient
 
 client = ClassificationClient.from_config()
+client.api_token = "paste-generated-token-here"
 
 models = client.get_models()
 print(models)
@@ -367,6 +421,7 @@ print(result["labels"])
 Client methods:
 
 - `ClassificationClient.from_config(path="config.yaml")`
+- `ClassificationClient(api_token="paste-generated-token-here")`
 - `ClassificationClient.get_models(capability="completion")`
 - `ClassificationClient.warmup_model(model=None, timeout=None)`
 - `ClassificationClient.evaluate_markdown(markdown, model=None, timeout=None, include_raw=False, justify=False)`

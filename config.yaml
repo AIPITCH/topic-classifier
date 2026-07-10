@@ -2,6 +2,9 @@ log: info
 logrotate:
   enabled: true
   retention_days: 30
+auth:
+  enabled: false
+  tokens: []
 flask:
   host: 127.0.0.1
   port: 5151

@@ -7,6 +7,8 @@ Backend API for a channel classifier using Ollama.
 
 import argparse
 import datetime
+import functools
+import hmac
 import json
 import logging
 import os
@@ -21,6 +23,7 @@ from typing import Any
 import requests
 import yaml
 from flask import Flask, jsonify, request
+from flask_httpauth import HTTPTokenAuth
 from rich.logging import RichHandler
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -182,6 +185,7 @@ CONTENT_CLASSIFICATION_TAGS: list[dict[str, str]] = []
 JOB_QUEUE: Queue[str] = Queue()
 JOB_LOCK = threading.Lock()
 JOB_WORKERS_STARTED = False
+TOKEN_AUTH = HTTPTokenAuth(scheme="Bearer")
 USER_MARKDOWN_TOKEN_LIMIT = 10000
 MAX_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
@@ -757,6 +761,76 @@ def request_client_ip() -> str:
     if forwarded_for:
         return forwarded_for.split(",", 1)[0].strip()
     return request.remote_addr or "unknown"
+
+
+def auth_config(config: dict[str, Any]) -> dict[str, Any]:
+    """
+    Return auth config.
+    """
+    return config.get("auth") or {}
+
+
+def auth_enabled(config: dict[str, Any]) -> bool:
+    """
+    Return true when Bearer token auth is required.
+    """
+    return config_bool(auth_config(config).get("enabled"), False)
+
+
+def configured_auth_tokens(config: dict[str, Any]) -> list[str]:
+    """
+    Return configured Bearer tokens.
+    """
+    values = auth_config(config).get("tokens") or []
+    if isinstance(values, str):
+        values = [values]
+    if not isinstance(values, list):
+        raise ValueError("auth tokens must be a list")
+    return [str(token) for token in values if str(token)]
+
+
+def validate_auth_config(config: dict[str, Any]) -> None:
+    """
+    Validate auth config and warn on fail-closed empty token setup.
+    """
+    tokens = configured_auth_tokens(config)
+    if auth_enabled(config) and not tokens:
+        logger.warning("Auth is enabled but no tokens are configured")
+
+
+@TOKEN_AUTH.verify_token
+def verify_auth_token(token: str) -> str | None:
+    """
+    Verify Bearer token using constant-time comparison.
+    """
+    if not auth_enabled(CONFIG):
+        return "auth-disabled"
+    for configured_token in configured_auth_tokens(CONFIG):
+        if hmac.compare_digest(token, configured_token):
+            return "api-token"
+    return None
+
+
+@TOKEN_AUTH.error_handler
+def auth_error(status: int):
+    """
+    Return JSON auth errors.
+    """
+    return jsonify({"error": "authentication required"}), status
+
+
+def require_auth(view_func):
+    """
+    Apply token auth when configured.
+    """
+
+    @functools.wraps(view_func)
+    def wrapper(*args, **kwargs):
+        if not auth_enabled(CONFIG):
+            return view_func(*args, **kwargs)
+        return TOKEN_AUTH.login_required(view_func)(*args, **kwargs)
+
+    return wrapper
 
 
 def config_bool(value: Any, default: bool) -> bool:
@@ -1393,6 +1467,7 @@ def create_app() -> Flask:
     """
     Create Flask API app.
     """
+    validate_auth_config(CONFIG)
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = configured_max_body_bytes(CONFIG)
     start_job_workers()
@@ -1402,6 +1477,7 @@ def create_app() -> Flask:
         return jsonify({"error": "request body too large"}), 413
 
     @app.get("/getmodels")
+    @require_auth
     def getmodels():
         capability = request.args.get("capability")
         try:
@@ -1412,6 +1488,7 @@ def create_app() -> Flask:
         return jsonify(cached_model_contexts(capability))
 
     @app.post("/evaluate")
+    @require_auth
     def evaluate_route():
         payload = request.get_json(silent=True)
         if isinstance(payload, dict):
@@ -1488,6 +1565,7 @@ def create_app() -> Flask:
         return jsonify(result)
 
     @app.get("/evaluate/<job_id>/status")
+    @require_auth
     def evaluate_status_route(job_id: str):
         try:
             job = read_current_job(job_id)
@@ -1496,6 +1574,7 @@ def create_app() -> Flask:
         return jsonify(public_job(job))
 
     @app.get("/evaluate/<job_id>/result")
+    @require_auth
     def evaluate_result_route(job_id: str):
         include_raw = parse_bool(request.args.get("include_raw"))
         try:
@@ -1523,6 +1602,7 @@ def create_app() -> Flask:
         return jsonify(result)
 
     @app.post("/warmup_model")
+    @require_auth
     def warmup_model_route():
         payload = request.get_json(silent=True) or {}
         if not isinstance(payload, dict):

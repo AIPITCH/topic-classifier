@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,15 @@ import requests
 ROOT_DIR = Path(__file__).resolve().parent
 SAMPLE_CHANNEL_PATH = ROOT_DIR / "test_data" / "test_sample_channel.json"
 DEFAULT_REQUEST_TIMEOUT = 120
+
+
+def auth_headers(args: argparse.Namespace) -> dict[str, str]:
+    """
+    Return optional Bearer token auth headers.
+    """
+    if not args.token:
+        return {}
+    return {"Authorization": f"Bearer {args.token}"}
 
 
 def json_to_markdown(data: Any, title: str = "sample_channel") -> str:
@@ -97,6 +107,7 @@ def submit_job(args: argparse.Namespace, markdown: str) -> str:
         f"{args.api_base.rstrip('/')}/evaluate",
         params={"async": "true"},
         json=payload,
+        headers=auth_headers(args),
         timeout=args.request_timeout,
     )
     raise_for_api_error(response)
@@ -128,6 +139,7 @@ def wait_for_job(args: argparse.Namespace, job_id: str) -> dict[str, Any]:
     while time.monotonic() < deadline:
         response = requests.get(
             f"{args.api_base.rstrip('/')}/evaluate/{job_id}/status",
+            headers=auth_headers(args),
             timeout=args.request_timeout,
         )
         raise_for_api_error(response)
@@ -147,6 +159,7 @@ def fetch_result(args: argparse.Namespace, job_id: str) -> dict[str, Any]:
     response = requests.get(
         f"{args.api_base.rstrip('/')}/evaluate/{job_id}/result",
         params={"include_raw": "true" if args.include_raw else "false"},
+        headers=auth_headers(args),
         timeout=args.request_timeout,
     )
     raise_for_api_error(response)
@@ -196,6 +209,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_REQUEST_TIMEOUT,
         help="HTTP timeout for submit/status/result requests.",
+    )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("CCE_API_TOKEN"),
+        help="Bearer token when API auth is enabled.",
     )
     return parser.parse_args()
 

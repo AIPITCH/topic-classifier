@@ -54,6 +54,7 @@ class ClassificationClient:
 
     api_base: str = "http://127.0.0.1:5151"
     timeout: int = 60
+    api_token: str | None = None
 
     @classmethod
     def from_config(cls, path: str = DEFAULT_CONFIG_PATH) -> "ClassificationClient":
@@ -63,7 +64,20 @@ class ClassificationClient:
         config = load_config(path)
         ollama_config = config.get("ollama") or {}
         timeout = int(ollama_config.get("timeout") or 60)
-        return cls(api_base=classifier_api_base(config), timeout=timeout)
+        api_token = os.environ.get("CCE_API_TOKEN")
+        return cls(
+            api_base=classifier_api_base(config),
+            timeout=timeout,
+            api_token=api_token,
+        )
+
+    def headers(self) -> dict[str, str]:
+        """
+        Return optional auth headers.
+        """
+        if not self.api_token:
+            return {}
+        return {"Authorization": f"Bearer {self.api_token}"}
 
     def get_models(self, capability: str = "completion") -> list[str]:
         """
@@ -72,6 +86,7 @@ class ClassificationClient:
         response = requests.get(
             f"{self.api_base.rstrip('/')}/getmodels",
             params={"capability": capability},
+            headers=self.headers(),
             timeout=self.timeout,
         )
         self._raise_for_error(response)
@@ -101,6 +116,7 @@ class ClassificationClient:
         response = requests.post(
             f"{self.api_base.rstrip('/')}/warmup_model",
             json=payload,
+            headers=self.headers(),
             timeout=effective_timeout,
         )
         self._raise_for_error(response)
@@ -133,6 +149,7 @@ class ClassificationClient:
         response = requests.post(
             f"{self.api_base.rstrip('/')}/evaluate",
             json=payload,
+            headers=self.headers(),
             timeout=effective_timeout,
         )
         self._raise_for_error(response)

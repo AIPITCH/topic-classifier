@@ -17,6 +17,9 @@ log: info
 logrotate:
   enabled: true
   retention_days: 30
+auth:
+  enabled: false
+  tokens: []
 flask:
   host: 127.0.0.1
   port: 5151
@@ -45,10 +48,40 @@ ollama:
 Security limits:
 
 - request body limit: `flask.max_body_bytes`
+- auth is disabled by default with `auth.enabled: false`
 - taxonomy cache refresh: `taxonomy.cache_ttl_days` days
 - queued result cache: `queue.cache_ttl_hours` hours
 - request timeout override max: `900` seconds
 - model override must be in `ollama.allowlist` when allowlist is set
+
+## Authentication
+
+Bearer token authentication is optional and disabled by default.
+
+Generate a token:
+
+```bash
+python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+```
+
+Enable auth in `config.yaml`:
+
+```yaml
+auth:
+  enabled: true
+  tokens:
+    - paste-generated-token-here
+```
+
+Use the token:
+
+```bash
+curl -H 'Authorization: Bearer paste-generated-token-here' \
+  'http://127.0.0.1:5151/getmodels'
+```
+
+If `auth.enabled` is `true` and `tokens` is empty, all protected API requests are denied. Set `auth.enabled: false` or remove the `auth` block to run without auth.
+Do not commit real tokens to git; keep local config or deployment secrets private.
 
 ## Run
 
@@ -74,6 +107,7 @@ Raw Markdown:
 
 ```bash
 curl -X POST 'http://127.0.0.1:5151/evaluate?justify=true' \
+  -H 'Authorization: Bearer paste-generated-token-here' \
   -H 'Content-Type: text/markdown' \
   --data-binary @sample.md
 ```
@@ -82,6 +116,7 @@ JSON:
 
 ```bash
 curl -X POST 'http://127.0.0.1:5151/evaluate' \
+  -H 'Authorization: Bearer paste-generated-token-here' \
   -H 'Content-Type: application/json' \
   -d '{
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
@@ -95,6 +130,7 @@ Queued JSON:
 
 ```bash
 curl -X POST 'http://127.0.0.1:5151/evaluate' \
+  -H 'Authorization: Bearer paste-generated-token-here' \
   -H 'Content-Type: application/json' \
   -d '{
     "data": "# Channel dump\n\nSelling leaked databases and credential dumps.",
@@ -117,13 +153,15 @@ Queued response:
 Check queued status:
 
 ```bash
-curl 'http://127.0.0.1:5151/evaluate/63b7e59d-a58b-4d20-a047-cb5a0e9d0f8f/status'
+curl -H 'Authorization: Bearer paste-generated-token-here' \
+  'http://127.0.0.1:5151/evaluate/63b7e59d-a58b-4d20-a047-cb5a0e9d0f8f/status'
 ```
 
 Fetch queued result:
 
 ```bash
-curl 'http://127.0.0.1:5151/evaluate/63b7e59d-a58b-4d20-a047-cb5a0e9d0f8f/result'
+curl -H 'Authorization: Bearer paste-generated-token-here' \
+  'http://127.0.0.1:5151/evaluate/63b7e59d-a58b-4d20-a047-cb5a0e9d0f8f/result'
 ```
 
 Response shape:
@@ -189,7 +227,8 @@ Logs:
 ## Models
 
 ```bash
-curl 'http://127.0.0.1:5151/getmodels'
+curl -H 'Authorization: Bearer paste-generated-token-here' \
+  'http://127.0.0.1:5151/getmodels'
 ```
 
 ## Demo
@@ -200,11 +239,14 @@ python3 demo/test_classify.py --model gemma4:31b
 python3 demo/test_classify.py --model gemma4:31b --warmup
 python3 demo/test_classify.py --model gemma4:31b --justify
 python3 demo/test_classify.py --list-model
+python3 demo/test_classify.py --token paste-generated-token-here
 python3 demo/test_classify_queue.py --justify
+python3 demo/test_classify_queue.py --token paste-generated-token-here
 ```
 
 The demo can warm the selected model, loads `demo/test_data/test_sample_channel.json`, converts it to Markdown, then calls `/evaluate`.
 The sync demo uses a 120 second request timeout by default.
+Both demos also read `CCE_API_TOKEN` when auth is enabled.
 The queue demo submits `async=true`, prints the queued job UID, polls `/evaluate/<id>/status` every 15 seconds by default, then fetches `/evaluate/<id>/result`.
 The queue demo uses a 120 second request timeout by default.
 

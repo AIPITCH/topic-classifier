@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -85,6 +86,11 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_REQUEST_TIMEOUT,
         help="HTTP/API timeout in seconds.",
     )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("CCE_API_TOKEN"),
+        help="Bearer token when API auth is enabled.",
+    )
     return parser.parse_args()
 
 
@@ -96,6 +102,7 @@ def main() -> int:
     model = args.model
     client = ClassificationClient.from_config()
     client.timeout = args.timeout
+    client.api_token = args.token
 
     try:
         if args.list_model:
