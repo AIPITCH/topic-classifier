@@ -212,6 +212,7 @@ CONFIG: dict[str, Any] = {}
 CONTENT_CLASSIFICATION_TAGS: list[dict[str, str]] = []
 JOB_QUEUE: Queue[str] = Queue()
 JOB_LOCK = threading.Lock()
+JOB_LOG_CONTEXT = threading.local()
 JOB_WORKERS_STARTED = False
 QUEUED_JOB_IDS: set[str] = set()
 RUNNING_JOB_IDS: set[str] = set()
@@ -983,6 +984,7 @@ def process_evaluation_job(job_id: str) -> None:
         write_job(job)
 
         request_data = job.get("request") or {}
+        JOB_LOG_CONTEXT.job_id = job_id
         result = evaluate_markdown(
             request_data.get("markdown", ""),
             request_data.get("model"),
@@ -1001,6 +1003,8 @@ def process_evaluation_job(job_id: str) -> None:
     except requests.RequestException as error:
         store_failed_job(job_id, "ollama evaluation failed", error)
     finally:
+        if hasattr(JOB_LOG_CONTEXT, "job_id"):
+            del JOB_LOG_CONTEXT.job_id
         with JOB_LOCK:
             RUNNING_JOB_IDS.discard(job_id)
 
@@ -1269,6 +1273,7 @@ def evaluate_markdown(
     if not isinstance(markdown, str) or not markdown.strip():
         raise ValueError("data must be non-empty markdown text")
 
+    job_id = getattr(JOB_LOG_CONTEXT, "job_id", "sync")
     client = ollama_client()
     model_name = model or client.engine()
     if not model_name:
@@ -1283,7 +1288,7 @@ def evaluate_markdown(
     )
     evaluation_prompt = f"{evaluation_query}\n\n# Input\n{user_markdown}"
 
-    logger.info("Evaluating Markdown with model: %s", model_name)
+    logger.info("Evaluating Markdown: job_id=%s model=%s", job_id, model_name)
     session = requests.Session()
     start_time = time.perf_counter()
     evaluation_response = client.generate(
@@ -1319,7 +1324,9 @@ def evaluate_markdown(
                 taxonomy_tags="\n".join(f"- {entry}" for entry in selected_entries)
             )
             justification_prompt = f"{justification_query}\n\n# Input\n{user_markdown}"
-            logger.info("Justifying taxonomy labels with model: %s", model_name)
+            logger.info(
+                "Justifying taxonomy labels: job_id=%s model=%s", job_id, model_name
+            )
             justification_response = client.generate(
                 session,
                 justification_prompt,
@@ -1363,7 +1370,7 @@ def evaluate_markdown(
     summary_text = None
     if summary:
         summary_prompt = f"{SUMMARY_QUERY}\n\n# Input\n{user_markdown}"
-        logger.info("Summarizing Markdown with model: %s", model_name)
+        logger.info("Summarizing Markdown: job_id=%s model=%s", job_id, model_name)
         summary_response = client.generate(
             session,
             summary_prompt,

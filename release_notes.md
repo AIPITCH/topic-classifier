@@ -13,3 +13,4 @@
 - Shard queued job cache files by first UUID character.
 - Improve API file logs with UTC timestamps, IP field, job IDs, user IDs, and queued result retrieval entries.
 - Add configurable client IP header for request logs, defaulting to `X-Forwarded-For`.
+- Include job IDs in evaluation, justification, and summarization processing logs.
