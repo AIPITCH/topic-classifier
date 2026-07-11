@@ -37,6 +37,7 @@ flask:
   listen: 127.0.0.1
   listen_family: ipv4
   client_host: 127.0.0.1
+  client_ip_header: X-Forwarded-For
   port: 5151
   max_body_bytes: 2097152
 taxonomy:
@@ -296,6 +297,7 @@ Logs:
 - API logs are appended to `log/cc-YYYY-MM-DD.log`
 - log lines use `YYYY-MM-DDTHH:MM:SSZ - LEVEL - IP - message`
 - internal server messages use `127.0.0.1` as the IP field
+- request client IP is read from `flask.client_ip_header`, default `X-Forwarded-For`, and falls back to the socket address when the header is missing
 - the server opens a new dated file automatically each local day
 - log rotation can be disabled with `logrotate.enabled: false`; disabled mode appends to `log/cc.log`
 - old dated log files are pruned automatically after `logrotate.retention_days` days, default 30

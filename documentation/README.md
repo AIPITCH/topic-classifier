@@ -39,6 +39,7 @@ flask:
   listen: 127.0.0.1
   listen_family: ipv4
   client_host: 127.0.0.1
+  client_ip_header: X-Forwarded-For
   port: 5151
   max_body_bytes: 2097152
 taxonomy:
@@ -207,15 +208,24 @@ true. The server automatically opens a new dated log file each local day and
 prunes dated log files older than `logrotate.retention_days`; the default is 30
 days. When `logrotate.enabled` is false, logs are appended to `log/cc.log`.
 
+Log lines use `YYYY-MM-DDTHH:MM:SSZ - LEVEL - IP - message`. Internal
+server messages use `127.0.0.1` as the IP field. Request client IP is read
+from `flask.client_ip_header`, default `X-Forwarded-For`, and falls back to
+the socket address when the header is missing.
+
 New `POST /evaluate` requests log:
 
-- client IP, using the first `X-Forwarded-For` value when present
+- client IP
+- job ID
+- user ID
 - `async` flag
 - `justify` flag
 - `summary` flag
 - selected model
 
-Status and result polling routes do not emit this new-query log line.
+Each `GET /evaluate/<job_id>/result` request logs job ID, user ID, client IP,
+and job status. `GET /evaluate/<job_id>/status` polling is not logged to avoid
+completion-check noise.
 
 ## Health
 

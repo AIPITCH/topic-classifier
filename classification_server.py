@@ -56,6 +56,7 @@ DEFAULT_JOB_CACHE_PATH = os.path.join(THIS_DIR, ".cache", "classification_jobs")
 DEFAULT_JOB_CACHE_TTL_HOURS = 24
 DEFAULT_JOB_WORKERS = 1
 DEFAULT_LOG_RETENTION_DAYS = 30
+DEFAULT_CLIENT_IP_HEADER = "X-Forwarded-For"
 
 
 def print_meta() -> None:
@@ -338,6 +339,14 @@ def configured_max_body_bytes(config: dict[str, Any]) -> int:
     return size
 
 
+def configured_client_ip_header(config: dict[str, Any]) -> str:
+    """
+    Return request header used as client IP source.
+    """
+    flask_config = config.get("flask") or {}
+    return str(flask_config.get("client_ip_header") or DEFAULT_CLIENT_IP_HEADER).strip()
+
+
 def taxonomy_config(config: dict[str, Any]) -> dict[str, Any]:
     """
     Return content-classification taxonomy config.
@@ -594,9 +603,10 @@ def request_client_ip() -> str:
     """
     Return best-effort client IP for logs.
     """
-    forwarded_for = request.headers.get("X-Forwarded-For", "")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip()
+    header_name = configured_client_ip_header(CONFIG)
+    header_value = request.headers.get(header_name, "") if header_name else ""
+    if header_value:
+        return header_value.split(",", 1)[0].strip()
     return request.remote_addr or "unknown"
 
 
