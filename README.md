@@ -294,10 +294,14 @@ Local cache behavior:
 Logs:
 
 - API logs are appended to `log/cc-YYYY-MM-DD.log`
+- log lines use `YYYY-MM-DDTHH:MM:SSZ - LEVEL - IP - message`
+- internal server messages use `127.0.0.1` as the IP field
 - the server opens a new dated file automatically each local day
 - log rotation can be disabled with `logrotate.enabled: false`; disabled mode appends to `log/cc.log`
 - old dated log files are pruned automatically after `logrotate.retention_days` days, default 30
-- each new `/evaluate` request logs client IP, async flag, justify flag, summary flag, and model
+- each new `/evaluate` request logs job ID, user ID, client IP, async flag, justify flag, summary flag, and model
+- each `/evaluate/<job_id>/result` request logs job ID, user ID, client IP, and job status
+- `/evaluate/<job_id>/status` polling is not logged to avoid completion-check noise
 
 Health:
 

@@ -8,6 +8,7 @@ Backend API for a channel classifier using Ollama.
 import argparse
 import datetime
 import functools
+import hashlib
 import hmac
 import json
 import logging
@@ -74,8 +75,25 @@ console_handler.setLevel(logging.INFO)
 
 log_dir = os.path.join(THIS_DIR, "log")
 os.makedirs(log_dir, exist_ok=True)
-file_formatter = logging.Formatter(
-    "%(asctime)s - %(levelname)s - %(message)s", datefmt="[%X]"
+LOG_INTERNAL_CLIENT_IP = "127.0.0.1"
+
+
+class UtcClientIpFormatter(logging.Formatter):
+    """
+    Format file logs with UTC timestamp and a default internal client IP.
+    """
+
+    converter = time.gmtime
+
+    def format(self, record: logging.LogRecord) -> str:
+        if not hasattr(record, "client_ip"):
+            record.client_ip = LOG_INTERNAL_CLIENT_IP
+        return super().format(record)
+
+
+file_formatter = UtcClientIpFormatter(
+    "%(asctime)s - %(levelname)s - %(client_ip)s - %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%SZ",
 )
 
 
@@ -580,6 +598,93 @@ def request_client_ip() -> str:
     if forwarded_for:
         return forwarded_for.split(",", 1)[0].strip()
     return request.remote_addr or "unknown"
+
+
+def request_bearer_token() -> str:
+    """
+    Return Bearer token from current request without logging it.
+    """
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return ""
+    return token.strip()
+
+
+def token_log_id(token: str) -> str:
+    """
+    Return stable non-secret token identifier for logs.
+    """
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"token:{digest[:12]}"
+
+
+def request_user_id() -> str:
+    """
+    Return best-effort authenticated user identifier for logs.
+    """
+    if not auth_enabled(CONFIG):
+        return "auth-disabled"
+    token = request_bearer_token()
+    if not token:
+        return "unknown"
+    for configured_token in configured_auth_tokens(CONFIG):
+        if hmac.compare_digest(token, configured_token):
+            return token_log_id(token)
+    return "unknown"
+
+
+def log_evaluation_request(log_data: dict[str, Any]) -> None:
+    """
+    Log accepted evaluation request without exposing secrets.
+    """
+    logger.info(
+        (
+            "Evaluation request received: job_id=%s user_id=%s "
+            "async=%s justify=%s summary=%s model=%s"
+        ),
+        log_data["job_id"],
+        log_data["user_id"],
+        log_data["async_requested"],
+        log_data["justify"],
+        log_data["summary_requested"],
+        log_data["model_name"],
+        extra={"client_ip": log_data["client_ip"]},
+    )
+
+
+def evaluation_log_data(
+    async_requested: bool,
+    justify: bool,
+    summary_requested: bool,
+    model: str | None,
+) -> dict[str, Any]:
+    """
+    Return common evaluation request log fields.
+    """
+    return {
+        "client_ip": request_client_ip(),
+        "user_id": request_user_id(),
+        "async_requested": async_requested,
+        "justify": justify,
+        "summary_requested": summary_requested,
+        "model_name": model or ollama_client().engine(),
+    }
+
+
+def log_queued_result_retrieval(
+    job_id: str, client_ip: str, user_id: str, status: str
+) -> None:
+    """
+    Log one queued result retrieval request.
+    """
+    logger.info(
+        "Queued result retrieval: job_id=%s user_id=%s status=%s",
+        job_id,
+        user_id,
+        status,
+        extra={"client_ip": client_ip},
+    )
 
 
 def auth_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -1407,13 +1512,8 @@ def create_app() -> Flask:
             return jsonify({"error": "data must be non-empty markdown text"}), 400
         if model is not None and not isinstance(model, str):
             return jsonify({"error": "model must be string"}), 400
-        logger.info(
-            "Evaluation request received: client_ip=%s async=%s justify=%s summary=%s model=%s",
-            request_client_ip(),
-            async_requested,
-            justify,
-            summary_requested,
-            model or ollama_client().engine(),
+        log_data = evaluation_log_data(
+            async_requested, justify, summary_requested, model
         )
 
         try:
@@ -1428,9 +1528,11 @@ def create_app() -> Flask:
                     justify,
                     summary_requested,
                 )
+                log_evaluation_request({**log_data, "job_id": job["id"]})
                 return jsonify(public_job(job)), 202
             if not queue_allow_sync(CONFIG):
                 return jsonify({"error": "synchronous evaluation is disabled"}), 400
+            log_evaluation_request({**log_data, "job_id": "sync"})
             result = evaluate_markdown(
                 markdown,
                 model,
@@ -1464,13 +1566,17 @@ def create_app() -> Flask:
     @app.get("/evaluate/<job_id>/result")
     @require_auth
     def evaluate_result_route(job_id: str):
+        client_ip = request_client_ip()
+        user_id = request_user_id()
         include_raw = parse_bool(request.args.get("include_raw"))
         try:
             job = read_current_job(job_id)
         except (FileNotFoundError, ValueError, json.JSONDecodeError):
+            log_queued_result_retrieval(job_id, client_ip, user_id, "not_found")
             return jsonify({"error": "job not found"}), 404
 
         status = job.get("status")
+        log_queued_result_retrieval(job_id, client_ip, user_id, str(status))
         if status in {"queued", "running"}:
             return jsonify(public_job(job)), 202
         if status == "expired":
