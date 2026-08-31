@@ -3,6 +3,9 @@
 Local Flask API for Ollama-based Markdown evaluation against the MISP
 `content-classification` taxonomy.
 
+This document contains the complete technical documentation. For the project
+overview, see the [main README](../README.md).
+
 ## Start
 
 Install deps:
@@ -17,6 +20,12 @@ Start server:
 python3 classification_server.py
 ```
 
+Default URLs:
+
+- landing/status page: `http://127.0.0.1:5151/`
+- health endpoint: `http://127.0.0.1:5151/health`
+- API base URL: `http://127.0.0.1:5151`
+
 Default config template: `config.yaml.default`
 
 Create local config:
@@ -26,6 +35,15 @@ cp config.yaml.default config.yaml
 ```
 
 `config.yaml` is ignored by git so local tokens and deployment settings do not get committed.
+
+Important limits and defaults:
+
+- request body limit: `flask.max_body_bytes`;
+- authentication disabled by default with `auth.enabled: false`;
+- taxonomy cache refresh: `taxonomy.cache_ttl_days` days;
+- queued result cache retention: `queue.cache_ttl_hours` hours;
+- request timeout override maximum: `900` seconds;
+- model overrides must be listed in `ollama.allowlist` when an allowlist is configured.
 
 ```yaml
 log: info
