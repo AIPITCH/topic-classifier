@@ -29,9 +29,11 @@ from flask_httpauth import HTTPTokenAuth
 from rich.logging import RichHandler
 from werkzeug.exceptions import RequestEntityTooLarge
 
+from lib import bertopic_backend
 from lib import health as health_lib
 from lib import ollama
 from lib import scheduler as scheduler_lib
+from lib import training
 from lib import uids
 from queries import (
     SUMMARY_QUERY,
@@ -221,6 +223,7 @@ USER_MARKDOWN_TOKEN_LIMIT = 10000
 MAX_TIMEOUT_SECONDS = 900
 DEFAULT_MAX_BODY_BYTES = 2 * 1024 * 1024
 APPROX_TOKEN_RE = re.compile(r"\S+")
+BERTOPIC_BACKEND: bertopic_backend.BERTopicBackend | None = None
 
 
 def load_config() -> dict[str, Any]:
@@ -1274,13 +1277,45 @@ def evaluate_markdown(
         raise ValueError("data must be non-empty markdown text")
 
     job_id = getattr(JOB_LOG_CONTEXT, "job_id", "sync")
+    user_markdown, input_tokens, input_truncated = truncate_user_markdown(markdown)
+    if (
+        model is None
+        and not justify
+        and not summary
+        and bertopic_backend.configured(CONFIG)
+    ):
+        global BERTOPIC_BACKEND
+        try:
+            if BERTOPIC_BACKEND is None:
+                BERTOPIC_BACKEND = bertopic_backend.BERTopicBackend(CONFIG, THIS_DIR)
+            start_time = time.perf_counter()
+            predicted_uids = BERTOPIC_BACKEND.classify(user_markdown)
+            by_uid = {tag["uid"]: tag for tag in get_content_classification_tags()}
+            labels = [
+                public_taxonomy_label(by_uid[uid])
+                for uid in predicted_uids
+                if uid in by_uid
+            ]
+            return {
+                "labels": labels,
+                "justify": False,
+                "engine": "bertopic",
+                "processing_time_seconds": round(time.perf_counter() - start_time, 3),
+                "truncated": input_truncated,
+                "input_tokens": input_tokens,
+                "input_truncated": input_truncated,
+                "input_token_limit": USER_MARKDOWN_TOKEN_LIMIT,
+                "raw_output": {"topic_label_uids": predicted_uids},
+            }
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+            logger.warning("BERTopic unavailable; falling back to Ollama: %s", error)
+
     client = ollama_client()
     model_name = model or client.engine()
     if not model_name:
         raise ValueError("missing model")
     client.ensure_model_allowed(model_name)
 
-    user_markdown, input_tokens, input_truncated = truncate_user_markdown(markdown)
     evaluation_query = TAXONOMY_EVALUATION_QUERY.format(
         taxonomy_tags="\n".join(
             f"- {entry}" for entry in content_classification_prompt_entries()
@@ -1392,6 +1427,7 @@ def evaluate_markdown(
     result = {
         "labels": labels,
         "justify": justify,
+        "engine": "ollama",
         "processing_time_seconds": round(processing_time_seconds, 3),
         "truncated": input_truncated,
         "input_tokens": input_tokens,
@@ -1401,6 +1437,10 @@ def evaluate_markdown(
     }
     if summary:
         result["summary"] = summary_text or ""
+    try:
+        training.append_example(CONFIG, THIS_DIR, user_markdown, labels, model_name)
+    except OSError as error:
+        logger.error("Could not append BERTopic training example: %s", error)
     return result
 
 
@@ -1661,8 +1701,13 @@ def main() -> int:
         logger.error("Invalid config: %s", error)
         return 1
     except requests.RequestException as error:
-        logger.error("Ollama connection failed: %s", error)
-        return 1
+        if not bertopic_backend.configured(CONFIG):
+            logger.error("Ollama connection failed: %s", error)
+            return 1
+        logger.warning(
+            "Ollama connection failed; starting with BERTopic inference only: %s",
+            error,
+        )
 
     flask_config = CONFIG.get("flask") or {}
     host = configured_listen_host(flask_config)

@@ -84,7 +84,73 @@ ollama:
     - gemma4:31b
   timeout: 300
   temperature: 0.1
+training:
+  enabled: false
+  dataset_path: .cache/training.jsonl
+bertopic:
+  enabled: false
+  model_path: .cache/bertopic-model
+  minimum_probability: 0.0
 ```
+
+## BERTopic training and automatic inference
+
+The service can retain successful Ollama classifications as a JSON Lines
+dataset. Enable collection in the local configuration:
+
+```yaml
+training:
+  enabled: true
+  dataset_path: .cache/training.jsonl
+```
+
+Each line contains `text`, taxonomy UUIDs in `labels`, human-readable
+`label_values`, the Ollama `teacher`, and `created_at`. This makes the service a
+direct data source for BERTopic while retaining multi-label taxonomy targets.
+Only Ollama results are recorded; predictions made by BERTopic are never fed
+back into its own training data.
+
+Install the optional ML dependencies and train an artifact:
+
+```bash
+pip install -r requirements-ml.txt
+python3 train_bertopic.py .cache/training.jsonl .cache/bertopic-model \
+  --threshold 0.85 --test-size 0.2 --minimum-support 0.5
+```
+
+The default BERT-family embedding model is
+`sentence-transformers/all-MiniLM-L6-v2`. Select another Hugging Face model or
+a local model directory with `--embedding-model`; the identifier is persisted
+with the BERTopic artifact so it can be restored for inference.
+
+The command uses a deterministic train/test split, discovers topics on the
+training documents, maps each topic to taxonomy labels by majority support,
+and measures multi-label micro-F1 agreement against held-out Ollama labels. It
+writes BERTopic's model plus `topic-classifier.json`. The manifest is marked
+`eligible` only when its score reaches `--threshold`; exit status `2` means the
+model was saved for inspection but did not pass the gate. Use a representative,
+reviewed dataset: agreement with the teacher measures comparability, not factual
+correctness.
+
+After a model passes, enable automatic inference:
+
+```yaml
+bertopic:
+  enabled: true
+  model_path: .cache/bertopic-model
+  minimum_probability: 0.0
+```
+
+Plain `/evaluate` requests with no explicit `model` then use BERTopic and return
+`"engine": "bertopic"`. Requests for justification or summary, and requests
+with an explicit Ollama model, continue to use Ollama. If the artifact is
+missing, ineligible, corrupt, or its optional dependency is unavailable, the
+server logs a warning and safely falls back to Ollama. `minimum_probability`
+can reject low-confidence topic assignments (which produces an empty label
+list). Ollama responses return `"engine": "ollama"`. When BERTopic is enabled,
+the server can also start while Ollama is offline, although LLM-only operations
+(summary, justification, explicit model selection, and fallback) remain
+unavailable until Ollama recovers.
 
 Override config path:
 

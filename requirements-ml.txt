@@ -1,0 +1,3 @@
+-r requirements.txt
+bertopic>=0.16
+sentence-transformers>=3

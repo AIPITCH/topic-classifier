@@ -18,7 +18,9 @@ from Telegram or other sources, using a shared taxonomy.
 - HTTP API and Python client;
 - local taxonomy and result caching;
 - optional Bearer authentication;
-- execution with an allowlisted Ollama model.
+- execution with an allowlisted Ollama model;
+- optional JSONL collection of LLM-labelled documents for BERTopic training;
+- quality-gated BERTopic inference with automatic Ollama fallback.
 
 ## Installation and usage
 
