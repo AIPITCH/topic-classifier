@@ -322,7 +322,7 @@ Healthy response returns HTTP 200:
 ```json
 {
   "status": "ok",
-  "ai_engine": "ok",
+  "ai_engine": "ollama",
   "last_check": 1783660020
 }
 ```
@@ -339,6 +339,9 @@ Unhealthy response returns HTTP 500:
 ```
 
 Before the first successful background probe, `/health` returns 500.
+When BERTopic is enabled and its eligible artifact can be loaded, an Ollama
+outage instead returns HTTP 200 with `"ai_engine": "bertopic"`. The endpoint
+returns HTTP 500 only when neither configured inference path is available.
 
 ## Routes
 

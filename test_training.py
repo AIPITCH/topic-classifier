@@ -1,13 +1,19 @@
 """Tests for the optional BERTopic training pipeline helpers."""
 
 import json
+import logging
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
+import requests
+
+import classification_server
 from lib import training
+from lib import health
 from lib.bertopic_backend import BERTopicBackend
-from train_bertopic import f1_score, read_examples, topic_label_map
+from train_bertopic import f1_score, read_examples, split_examples, topic_label_map
 
 
 class TrainingTests(unittest.TestCase):
@@ -62,6 +68,77 @@ class TrainingTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "quality threshold"):
                 backend.classify("document")
+
+    def test_malformed_manifest_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "model"
+            model_path.mkdir()
+            (model_path / "topic-classifier.json").write_text("[]", encoding="utf-8")
+            backend = BERTopicBackend(
+                {"bertopic": {"model_path": str(model_path)}}, directory
+            )
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                backend.classify("document")
+
+    def test_malformed_topic_mapping_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path = Path(directory) / "model"
+            model_path.mkdir()
+            (model_path / "topic-classifier.json").write_text(
+                json.dumps({"eligible": True, "topic_labels": []}), encoding="utf-8"
+            )
+            backend = BERTopicBackend(
+                {"bertopic": {"model_path": str(model_path)}}, directory
+            )
+            with self.assertRaisesRegex(ValueError, "topic_labels"):
+                backend.classify("document")
+
+    def test_small_training_partition_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "at least 6"):
+            split_examples([{}] * 5, 0.2)
+
+    def test_split_keeps_test_example(self):
+        training_examples, test_examples = split_examples([{}] * 8, 0.2)
+        self.assertEqual(len(training_examples), 6)
+        self.assertEqual(len(test_examples), 2)
+
+    def test_health_reports_selected_backend(self):
+        state = health.health_probe_tick(
+            {}, lambda _timeout: {"ai_engine": "bertopic"}, logging.getLogger(__name__)
+        )
+        self.assertEqual(state["status"], "ok")
+        self.assertEqual(state["ai_engine"], "bertopic")
+
+    def test_ai_health_falls_back_to_bertopic(self):
+        class OfflineOllama:
+            """Test double for an unavailable Ollama server."""
+
+            @staticmethod
+            def health(_timeout):
+                raise requests.ConnectionError("offline")
+
+        class AvailableBERTopic:
+            """Test double for an eligible BERTopic artifact."""
+
+            @staticmethod
+            def ensure_available():
+                return None
+
+        previous_config = classification_server.CONFIG
+        previous_backend = classification_server.BERTOPIC_BACKEND
+        try:
+            classification_server.CONFIG = {"bertopic": {"enabled": True}}
+            classification_server.BERTOPIC_BACKEND = AvailableBERTopic()
+            with mock.patch.object(
+                classification_server, "ollama_client", return_value=OfflineOllama()
+            ):
+                self.assertEqual(
+                    classification_server.ai_health_check(1),
+                    {"ai_engine": "bertopic"},
+                )
+        finally:
+            classification_server.CONFIG = previous_config
+            classification_server.BERTOPIC_BACKEND = previous_backend
 
 
 if __name__ == "__main__":

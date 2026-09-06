@@ -1083,11 +1083,31 @@ def start_health_scheduler() -> None:
         tick=partial(
             health_lib.health_probe_tick,
             CONFIG,
-            ollama_client().health,
+            ai_health_check,
             logger,
         ),
         logger=logger,
     )
+
+
+def ai_health_check(timeout: int) -> dict[str, Any]:
+    """Report Ollama or an eligible, loadable BERTopic backend as healthy."""
+    try:
+        ollama_client().health(timeout)
+        return {"ai_engine": "ollama"}
+    except (ValueError, requests.RequestException) as ollama_error:
+        if not bertopic_backend.configured(CONFIG):
+            raise
+        global BERTOPIC_BACKEND
+        if BERTOPIC_BACKEND is None:
+            BERTOPIC_BACKEND = bertopic_backend.BERTopicBackend(CONFIG, THIS_DIR)
+        try:
+            BERTOPIC_BACKEND.ensure_available()
+        except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError(
+                f"Ollama and BERTopic health checks failed: {error}"
+            ) from ollama_error
+        return {"ai_engine": "bertopic"}
 
 
 def start_job_workers() -> None:

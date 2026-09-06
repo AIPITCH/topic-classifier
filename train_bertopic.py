@@ -10,6 +10,8 @@ import random
 from collections import Counter, defaultdict
 from pathlib import Path
 
+MINIMUM_TRAINING_EXAMPLES = 6
+
 
 def read_examples(path: Path) -> list[dict]:
     """Read valid labelled examples from a JSON Lines dataset."""
@@ -55,6 +57,20 @@ def topic_label_map(
     }
 
 
+def split_examples(
+    examples: list[dict], test_size: float
+) -> tuple[list[dict], list[dict]]:
+    """Split examples while protecting BERTopic's default five-component reducer."""
+    split = max(1, min(len(examples) - 1, round(len(examples) * (1 - test_size))))
+    training, test = examples[:split], examples[split:]
+    if len(training) < MINIMUM_TRAINING_EXAMPLES:
+        raise ValueError(
+            f"training split has {len(training)} examples; at least "
+            f"{MINIMUM_TRAINING_EXAMPLES} are required by the default reducer"
+        )
+    return training, test
+
+
 def main() -> int:
     """Train on a split, benchmark against held-out LLM labels, and save."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -84,11 +100,13 @@ def main() -> int:
         parser.error(f"BERTopic is required; install requirements-ml.txt ({error})")
 
     examples = read_examples(args.dataset)
-    if len(examples) < 5:
-        parser.error("at least five training examples are required")
+    if len(examples) < 2:
+        parser.error("at least two examples are required for a train/test split")
     random.Random(args.seed).shuffle(examples)
-    split = max(1, min(len(examples) - 1, round(len(examples) * (1 - args.test_size))))
-    training, test = examples[:split], examples[split:]
+    try:
+        training, test = split_examples(examples, args.test_size)
+    except ValueError as error:
+        parser.error(str(error))
     model = bertopic_module.BERTopic(
         embedding_model=args.embedding_model,
         calculate_probabilities=True,

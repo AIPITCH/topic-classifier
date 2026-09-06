@@ -36,6 +36,7 @@ class BERTopicBackend:
         manifest_path = os.path.join(self.model_path, "topic-classifier.json")
         with open(manifest_path, "r", encoding="utf-8") as handle:
             manifest = json.load(handle)
+        self._validate_manifest(manifest)
         if not manifest.get("eligible"):
             raise ValueError(
                 "BERTopic model has not met the configured quality threshold"
@@ -46,13 +47,39 @@ class BERTopicBackend:
             raise RuntimeError(
                 "BERTopic inference requires: pip install -r requirements-ml.txt"
             ) from error
-        self._model = bertopic_module.BERTopic.load(self.model_path)
+        try:
+            self._model = bertopic_module.BERTopic.load(self.model_path)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            raise RuntimeError(f"could not load BERTopic artifact: {error}") from error
         self._manifest = manifest
+
+    @staticmethod
+    def _validate_manifest(manifest: Any) -> None:
+        """Validate fields consumed by inference before loading the model."""
+        if not isinstance(manifest, dict):
+            raise ValueError("BERTopic manifest must be a JSON object")
+        mapping = manifest.get("topic_labels", {})
+        if not isinstance(mapping, dict) or any(
+            not isinstance(topic, str)
+            or not isinstance(labels, list)
+            or any(not isinstance(label, str) for label in labels)
+            for topic, labels in mapping.items()
+        ):
+            raise ValueError(
+                "BERTopic manifest topic_labels must map strings to arrays"
+            )
+
+    def ensure_available(self) -> None:
+        """Load and validate the quality-gated artifact without classifying text."""
+        self._load()
 
     def classify(self, document: str) -> list[str]:
         """Return taxonomy UUIDs mapped to the document's inferred topic."""
         self._load()
-        topics, probabilities = self._model.transform([document])
+        try:
+            topics, probabilities = self._model.transform([document])
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            raise RuntimeError(f"BERTopic inference failed: {error}") from error
         topic = int(topics[0])
         probability = 1.0
         if probabilities is not None:
