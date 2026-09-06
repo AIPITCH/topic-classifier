@@ -36,3 +36,10 @@ ollama:
     - gemma4:31b
   timeout: 300
   temperature: 0.1
+training:
+  enabled: false
+  dataset_path: .cache/training.jsonl
+bertopic:
+  enabled: false
+  model_path: .cache/bertopic-model
+  minimum_probability: 0.0

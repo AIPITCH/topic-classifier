@@ -42,3 +42,6 @@ content-classification.json
 .env.*
 !.env.example
 config.yaml
+
+# Locally trained ML artifacts
+*.safetensors

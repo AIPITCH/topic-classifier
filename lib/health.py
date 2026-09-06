@@ -100,7 +100,7 @@ def set_health_state(
 
     if should_log:
         if status == "ok":
-            logger.info("Health probe recovered: ai_engine=ok")
+            logger.info("Health probe recovered: ai_engine=%s", ai_engine)
         else:
             logger.warning(
                 "Health probe failed: ai_engine=%s error=%s", ai_engine, error
@@ -113,16 +113,16 @@ def health_probe_tick(
     logger,
 ) -> dict[str, Any]:
     """
-    Probe Ollama and cache health state.
+    Probe the configured AI engines and cache health state.
     """
     timeout = health_timeout_seconds(config)
     try:
         data = health_check(timeout)
         if not isinstance(data, dict):
-            raise ValueError("invalid ollama health response")
-    except (ValueError, requests.RequestException) as error:
+            raise ValueError("invalid AI engine health response")
+    except (OSError, RuntimeError, ValueError, requests.RequestException) as error:
         set_health_state("error", "error", logger, str(error))
         return health_state()
 
-    set_health_state("ok", "ok", logger)
+    set_health_state("ok", str(data.get("ai_engine") or "ok"), logger)
     return health_state()
